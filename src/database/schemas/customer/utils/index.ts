@@ -1,1 +1,6 @@
-export { PLACEHOLDER_EMAIL_PATTERN, normalizeEmail, normalizePostalCode } from './normalize.js';
+export {
+  PLACEHOLDER_EMAIL_PATTERN,
+  normalizeEmail,
+  normalizeLanguage,
+  normalizePostalCode,
+} from './normalize.js';

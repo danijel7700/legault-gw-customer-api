@@ -11,6 +11,8 @@ export interface CustomerAddressResponse {
   readonly fullName?: string;
   readonly phone?: string;
   readonly preferred?: boolean;
+
+  readonly c_phoneType?: string;
 }
 
 export interface PaymentCardResponse {
@@ -44,4 +46,8 @@ export interface GetCustomerResponse {
   readonly preferredLocale?: string;
   readonly addresses?: readonly CustomerAddressResponse[];
   readonly paymentInstruments?: readonly PaymentInstrumentResponse[];
+
+  readonly c_preferredStore?: string;
+  readonly c_sscid?: string;
+  readonly c_ssccid?: string;
 }

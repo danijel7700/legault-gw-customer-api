@@ -1,15 +1,19 @@
 import type { BrandConfig } from '../../config/types/brand.types.js';
 import type {
   CustomerIdentity,
-  CustomerProfile,
+  SfccCustomerRecord,
 } from '../../modules/customer/types/customer.types.js';
 import type { Brand } from '../../shared/types/api.types.js';
 
 import { createCustomersClient, type CustomersClient } from './clients/customers.client.js';
-import { toCustomerProfile } from './mappers/customer.mapper.js';
+import { toSfccCustomerRecord } from './mappers/customer.mapper.js';
 
 export interface SfccProvider {
-  getCustomer(identity: CustomerIdentity): Promise<CustomerProfile>;
+  /**
+   * Reports what SFCC holds. Shaping that into the API response is the
+   * customer module's business, not this provider's.
+   */
+  getCustomer(identity: CustomerIdentity): Promise<SfccCustomerRecord>;
 }
 
 const providers = new Map<Brand, SfccProvider>();
@@ -32,6 +36,6 @@ function createSfccProvider(brandConfig: BrandConfig): SfccProvider {
 
   return {
     getCustomer: async ({ customerId, accessToken }) =>
-      toCustomerProfile(await customers.getCustomer(accessToken, customerId)),
+      toSfccCustomerRecord(await customers.getCustomer(accessToken, customerId)),
   };
 }

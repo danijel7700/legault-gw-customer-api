@@ -79,7 +79,6 @@ describe('reads', () => {
 
     assert.equal(created.brand, 'rens');
     assert.equal(created.profile.lastName, 'Lovelace');
-    // Normalized on the way in.
     assert.equal(created.profile.email, 'ada.lovelace@example.com');
     assert.equal(created.metadata.version, 1);
     assert.equal(created.metadata.lastModifiedBy, 'SFCC');
@@ -114,6 +113,14 @@ describe('reads', () => {
     assert.equal(found.id, created.id);
 
     assert.equal(await repo.findByEmail('rens', 'rm169685-noname@rewards.com'), null);
+  });
+
+  it('stores a customer with no lastName', async () => {
+    const created = await repo.create(
+      createInput({ profile: { email: 'noname@example.com' }, externalIds: [] }),
+    );
+
+    assert.equal(created.profile.lastName, null);
   });
 
   it('stores a placeholder email as null', async () => {
@@ -306,6 +313,18 @@ describe('upsertFromSfcc resolution order', () => {
       'absent field is not cleared',
     );
     assert.equal(result.customer.metadata.version, created.metadata.version + 1);
+  });
+
+  it('does not clobber a stored lastName when the payload omits it', async () => {
+    const created = await repo.create(createInput());
+
+    const result = await repo.upsertFromSfcc(
+      upsertInput({ profile: { email: 'ada.lovelace@example.com', firstName: 'Augusta' } }),
+    );
+
+    assert.equal(result.customer.id, created.id);
+    assert.equal(result.customer.profile.firstName, 'Augusta');
+    assert.equal(result.customer.profile.lastName, 'Lovelace', 'absent lastName leaves it alone');
   });
 
   it('fails closed when the supplied ids point at two different customers', async () => {

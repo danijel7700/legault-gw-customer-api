@@ -17,8 +17,8 @@ export const customer = pgTable(
 
     // SFCC `firstName`, max 40
     firstName: text('first_name'),
-    // SFCC `lastName`, max 80, required in Salesforce
-    lastName: text('last_name').notNull(),
+    // SFCC `lastName`, max 80.
+    lastName: text('last_name'),
 
     // SFSC `Salutation`, NAV `salutationCode`
     salutation: text('salutation'),

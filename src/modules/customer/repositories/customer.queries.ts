@@ -95,7 +95,7 @@ function profileInsertValues(profile: CreateProfileInput): ProfileInsertValues {
   return {
     email: normalizeEmail(profile.email),
     firstName: profile.firstName ?? null,
-    lastName: profile.lastName,
+    lastName: profile.lastName ?? null,
     salutation: profile.salutation ?? null,
     gender: profile.gender ?? null,
     birthDate: profile.birthDate ?? null,
@@ -181,7 +181,12 @@ export function buildUpsertProfileSet(profile: CreateProfileInput): CustomerUpda
   if (profile.firstName != null) {
     set.firstName = profile.firstName;
   }
-  set.lastName = profile.lastName;
+  // Conditional like every other field now that the column is nullable. It used
+  // to be written unconditionally, which meant a source with no lastName would
+  // clobber a good stored value with a placeholder.
+  if (profile.lastName != null) {
+    set.lastName = profile.lastName;
+  }
   if (profile.salutation != null) {
     set.salutation = profile.salutation;
   }

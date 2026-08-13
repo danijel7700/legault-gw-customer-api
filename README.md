@@ -31,7 +31,7 @@ pnpm build      # tsc -> dist/
 pnpm start      # node dist/server.js
 pnpm clean      # rm -rf dist
 
-pnpm typecheck  # tsc --noEmit (src/ including tests, and drizzle.config.ts)
+pnpm typecheck  # tsc --noEmit (src/, tests and drizzle.config.ts — one project)
 pnpm lint       # eslint
 pnpm format     # prettier --write
 pnpm check      # typecheck + lint + format:check
@@ -62,13 +62,12 @@ curl -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
 
 ```json
 {
-  "customerId": "ackKg3kKoZxrIRwKg0wWYYxraK",
-  "customerNo": "DEV_MND_00114027",
-  "login": "ada.lovelace@gmail.com",
   "email": "ada.lovelace@gmail.com",
   "firstName": "Ada",
   "lastName": "Lovelace",
   "phone": "514-555-5555",
+  "birthday": "1815-12-10",
+  "preferredLocale": "en",
   "addresses": [
     {
       "addressId": "Home",
@@ -76,7 +75,7 @@ curl -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
       "address2": "Apartment 49",
       "city": "Montreal",
       "stateCode": "QC",
-      "postalCode": "A1B 2C3",
+      "postalCode": "A1B2C3",
       "countryCode": "CA",
       "firstName": "Ada",
       "lastName": "Lovelace",
@@ -84,30 +83,22 @@ curl -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
       "phone": "514 555 5555",
       "preferred": true
     }
-  ],
-  "paymentInstruments": [
-    {
-      "paymentInstrumentId": "3e9f4fd402f8e719cd6722f71b",
-      "paymentMethodId": "CREDIT_CARD",
-      "default": true,
-      "paymentCard": {
-        "cardType": "Visa",
-        "maskedNumber": "4242********4242",
-        "numberLastDigits": "4242",
-        "expirationMonth": 12,
-        "expirationYear": 2030,
-        "holder": "Ada Lovelace",
-        "creditCardExpired": false
-      }
-    }
   ]
 }
 ```
 
-Absent fields are omitted rather than sent as `null` — including `addresses` and `paymentInstruments`,
-which are missing rather than `[]` when the customer has none. `customerId` is the only field always
-present. In practice `birthday` and `preferredLocale` are unset on the dev orgs, so treat those two as
-untested rather than reliable.
+**This is served from our own database**, not from SFCC — see
+[The read-through](#the-read-through). Three consequences worth knowing:
+
+- **No `paymentInstruments`.** Card data is deliberately not stored, so it cannot be returned.
+  A field that appeared only on a cache miss would be worse than no field at all.
+- **`preferredLocale` carries a bare language** (`en` / `fr`), not the SFCC locale (`en-CA`). The
+  column is `$type<Language>()`; the locale is normalized on the way in and the original is not kept.
+- **`postalCode` is stored uppercase without spaces** (`A1B2C3`), by `normalizePostalCode`.
+
+Absent fields are omitted rather than sent as `null`; `addresses` is `[]` rather than missing when the
+customer has none. In practice `birthday` and `preferredLocale` are unset on the dev orgs, so treat
+those two as untested rather than reliable.
 
 ### The inbound header contract
 
@@ -274,12 +265,17 @@ after `loadConfig()`.
   `req.headers.authorization` was already listed before it carried a shopper token, so forwarding one
   needed no new path. `x-customer-id` is deliberately _not_ redacted — it is opaque and it is the
   correlation key you need when reading logs.
-- **Array paths for the nested PII.** Once the profile carried `addresses` and `paymentInstruments`,
-  the flat `*.field` wildcards stopped being enough: a street address sits at `addresses[0].address1`,
-  which no fixed-depth wildcard reaches. Those are spelled out as `addresses[*].address1` and friends,
-  with the whole `paymentInstruments[*].paymentCard` object redacted wholesale rather than field by
-  field — there is nothing inside it worth logging. pino validates these at construction, so a
-  malformed path fails the boot rather than leaking silently.
+- **Array paths for the nested PII.** Once the profile carried `addresses`, the flat `*.field`
+  wildcards stopped being enough: a street address sits at `addresses[0].address1`, which no
+  fixed-depth wildcard reaches. Those are spelled out as `addresses[*].address1` and friends. pino
+  validates these at construction, so a malformed path fails the boot rather than leaking silently.
+  The `paymentInstruments[*].paymentCard` paths are now vestigial — the contract no longer carries
+  them — but they cost nothing and would matter again if card data ever passed through.
+- **The redact paths do not reach the store's shapes.** `birthDate`, `postalCode`, `street1`, `city`
+  and an external id `value` (an email, when the id type is `placeholderEmail`) are all uncovered, and
+  a `Customer` aggregate nests PII three levels deep where `*.field` cannot reach. This is why the
+  repository and the service log identifiers only, and never attach a driver error as `cause` — a
+  `DrizzleQueryError` message carries the failing SQL _and its bound parameters_.
 - `SENSITIVE_KEY` in `src/providers/sfcc/constants/sfcc-http.constant.ts` — upstream error bodies are
   scrubbed key-by-key _before_ being flattened to a string, because pino's `redact` works on object
   paths and cannot reach inside a string that already exists. It matches on substrings, so `phone`
@@ -473,40 +469,52 @@ tree into every importer and invite cycles.
 
 ### The contract
 
-`src/modules/customer/types/customer.types.ts` is the whole API surface of this module, and it names
+`src/modules/customer/types/customer.types.ts` is the API surface of this module, and it names
 no source system:
 
 ```ts
 interface CustomerProfile {
-  customerId: string;
-  customerNo?: string;
-  login?: string;
   email?: string;
   firstName?: string;
   lastName?: string;
-  phone?: string; // first of SFCC phoneMobile / phoneHome / phoneBusiness
+  phone?: string; // phoneMobile ?? phoneHome, re-collapsed for the response
   birthday?: string;
-  preferredLocale?: string;
+  preferredLocale?: string; // a bare language: 'en' | 'fr'
   addresses?: CustomerAddress[];
-  paymentInstruments?: CustomerPaymentInstrument[];
 }
 ```
 
-A **curated superset**, not a minimal one: everything a member-account screen needs — identity,
-contact, addresses and saved payment instruments — mapped field by field into types this module owns.
-`customerId` is the only field always present. `addresses` and `paymentInstruments` are omitted
-entirely when SFCC returns none rather than sent as `[]`, consistent with every other absent field.
+That file declares **two** contracts, and the distinction matters:
 
-`phone` collapses three SFCC fields into one. The Customer object carries `phoneMobile`, `phoneHome`
-and `phoneBusiness` separately and a profile may fill in any of them — the mondou dev customers use
+- **`CustomerProfile`** — what the endpoint returns, built from our own stored aggregate.
+- **`SfccCustomerRecord`** — what the SFCC provider reports, and what provisioning writes from. It
+  keeps the identifiers the response omits (`customerId`, `customerNo`, `login`), the phones SFCC
+  records separately, and the three `c_*` attributes Core stores, renamed to `preferredStore`,
+  `sfscAccountId`, `sfscPersonContactId` and address `phoneType` so no SFCC-instance naming survives
+  the boundary.
+
+The provider returns the record; shaping it into a response is this module's business, not the
+provider's. That split is what lets the response be served from the database while the record stays
+faithful to SFCC.
+
+`phone` collapses three SFCC fields into one _for the response only_ — the store keeps `phone_home`
+and `phone_mobile` in separate columns. The Customer object carries `phoneMobile`, `phoneHome` and
+`phoneBusiness` separately and a profile may fill in any of them; the mondou dev customers use
 `phoneMobile` and leave `phoneHome` empty, which is how reading a single field turned into a phone
 that silently vanished. First one set wins, mobile first.
 
-`CustomerAddress` and `CustomerPaymentInstrument` / `CustomerPaymentCard` are declared alongside it.
-Both nested mappers exist for the same reason as the top-level one: SFCC types `addressId` and
-`paymentInstrumentId` as optional, but they are how a caller addresses a single entry, so the contract
-makes them required. Card data is reduced to what a "saved cards" list renders — type, masked number,
-last digits, expiry, holder — and `paymentCard` is simply absent when SFCC omits it.
+`CustomerAddress` is declared alongside. Its mapper exists for the same reason as the top-level one:
+SFCC types `addressId` as optional, but it is how a caller addresses a single entry, so the contract
+makes it required. Note the store does the opposite — `sfcc_address_id` is nullable there precisely
+so that `customer_address_sfcc_id_uq` (partial on `IS NOT NULL`) does not collide every unidentified
+address on `('', customerId)`.
+
+**Payment instruments are no longer part of the contract.** They were, when every request went
+straight to SFCC. Now that the response is served from our database and card data is deliberately not
+stored, the field cannot be produced on a hit — and a field that appeared only on a miss would be
+worse than none. `CustomerPaymentCard` / `CustomerPaymentInstrument` and their mappers are gone;
+`GetCustomerResponse` still declares `paymentInstruments` because SCAPI does send it, and we simply
+stop mapping it.
 
 What SFCC also returns and this API **does not**:
 
@@ -536,6 +544,56 @@ in the mapper would defeat both, as would a `console.log(response)`: that prints
 Treat it as a display string, never as something to parse or match on. The client throws a 502 if a
 response arrives without a `customerId` at all, which is the assertion that SFCC returned a real
 customer rather than an empty 200.
+
+### The read-through
+
+`getCustomer` reads our own database first and calls SFCC only when we hold no record:
+
+```
+findByExternalId(brand, 'SFCC', 'customerId', x-customer-id)
+  hit  -> map the stored aggregate to CustomerProfile, return.  No SFCC call at all.
+  miss -> provider.getCustomer() -> toUpsertInput() -> repo.upsertFromSfcc() -> return
+```
+
+The lookup key is the `x-customer-id` header, resolved through
+`customer_external_id_uq` as an index-only scan — the index whose hand-written
+`INCLUDE (customer_id)` exists for exactly this query.
+
+`upsertFromSfcc` rather than `create`: it is built for lazy provisioning and already handles two
+first-time requests racing, via a savepoint and a single re-resolve.
+
+**What provisioning writes.** The profile, every address SFCC returned, and up to four external ids:
+
+| System | idType            | Source                                                                   |
+| ------ | ----------------- | ------------------------------------------------------------------------ |
+| `SFCC` | `customerId`      | the `x-customer-id` header — the authenticated identity, not the payload |
+| `SFCC` | `customerNo`      | `customerNo`                                                             |
+| `SFSC` | `accountId`       | `c_sscid` — Mondou in practice                                           |
+| `SFSC` | `personContactId` | `c_ssccid` — Mondou in practice                                          |
+
+A Ren's customer therefore usually gets two, a Mondou customer four. Absent ids are not written.
+
+**What has no SFCC source and stays null:** `gender`, `salutation` and the account-level
+`postal_code` — all three are SFSC-sourced, and no amount of widening the provider produces them.
+`birth_date` and `language` come from `birthday` / `preferredLocale`, which the README notes are unset
+on the dev orgs.
+
+**A hit never refreshes.** A profile edited in SFCC after provisioning will not be reflected. That is
+deliberate for now — a TTL or an explicit refresh endpoint is a separate decision, not a side effect
+of reading.
+
+**A missing `lastName` is stored as NULL, not rejected.** `customer.last_name` is nullable
+(migration `0001`) because SCAPI types it optional, and a customer we cannot name is still a customer
+we have to be able to store. A blank or whitespace-only value normalizes to NULL too, so "SFCC sent
+nothing" and "SFCC sent spaces" do not become two different states.
+
+**If the database write fails**, it is logged at `error` and the SFCC data is served anyway. The
+caller asked for a profile and we have one; provisioning is a side effect of answering, so an Aurora
+blip must not take down a read that could be served. The next request retries the write.
+
+The repository is bound to `db` here, in a lazy module-level memo mirroring `getSfccProvider` and
+`getBrandConfigMap`. `createCustomerRepository(db)` has exactly one production call site, which is
+what keeps the repository itself injectable and testable against a scratch database.
 
 ## The SFCC provider
 
@@ -977,10 +1035,13 @@ explicit `null` clears it, a value sets it. The SET object is built by walking t
 
 `upsertFromSfcc` is the opposite: present fields overwrite, absent fields are left alone, and it never
 clears a column. A source system omitting a field has no opinion about it, which is not a request to
-delete it. Its addresses are reconciled by upserting the supplied ones; rows we hold that the payload
-does not mention are **left alone**, because a partial payload must not silently delete history.
+delete it. That now includes `lastName` — it used to be written unconditionally, back when the column
+was NOT NULL, which meant a source with no surname would clobber a good stored value. Its addresses
+are reconciled by upserting the supplied ones; rows we hold that the payload does not mention are
+**left alone**, because a partial payload must not silently delete history.
 
-`normalizeEmail` and `normalizePostalCode` are applied at this boundary, on the way in, so nothing
+`normalizeEmail`, `normalizeLanguage` and `normalizePostalCode` are applied at this boundary, on the
+way in, so nothing
 above the repository has to remember. A placeholder email normalizes to `null` and can therefore never
 be stored, matched on, or returned.
 
@@ -1040,13 +1101,22 @@ parse and the `pino-pretty` worker thread that would keep the runner alive.
 
 Three pieces of wiring worth knowing:
 
-- Tests stay inside `tsconfig.json`'s `include`, so eslint's `projectService` and `tsc --noEmit` both
-  see them. They are kept out of `dist/` by `tsconfig.build.json`, which is what `pnpm build` uses.
-  Excluding them from `tsconfig.json` instead would have needed an `allowDefaultProject` entry, and
-  those globs cannot contain `**`.
+- **Two tsconfigs, one job each.** `tsconfig.json` never emits and includes **every** `.ts` file —
+  `src/`, the tests, the harness and `drizzle.config.ts` — so the editor, eslint's `projectService`
+  and `pnpm typecheck` all resolve the whole repo from a single program. `tsconfig.build.json` is the
+  only one that emits, and the only one that sets `rootDir`; it excludes the tests and the harness so
+  they never reach `dist/`.
 - `no-floating-promises` is off for `*.test.ts`: `describe`/`it` return `Promise<void>` in @types/node,
   so every block would otherwise need a `void` prefix.
 - `--test-concurrency=1`. Parallel writers against one schema trip the partial unique indexes.
+
+**Do not reintroduce `allowDefaultProject`.** An earlier version used it so `drizzle.config.ts` could
+be linted while sitting outside `include`. The failure mode is nasty and CLI-invisible: any file the
+project service drops into the inferred project loses its imports, so every member access on a
+properly-typed value reports _"a type that cannot be resolved"_. The editor fills with hundreds of
+phantom errors while `pnpm lint` stays green. Keeping one all-inclusive non-emitting project is what
+prevents it — and it is why `rootDir` moved to the build project, since a root-level file under
+`rootDir: ./src` is a TS6059 error.
 
 `pnpm check` deliberately does **not** run them — it stays hermetic, and the tests need a database.
 

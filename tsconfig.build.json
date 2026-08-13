@@ -1,11 +1,12 @@
 {
-  // What `pnpm build` compiles. Tests stay inside tsconfig.json's `include` so
-  // eslint's projectService and `tsc --noEmit` both see them without an
-  // allowDefaultProject entry (whose globs cannot contain `**`); they are kept
-  // out of dist/ here instead.
+  // The only project that emits. Narrower than tsconfig.json on purpose: tests,
+  // the test harness and drizzle.config.ts must not reach dist/.
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo.build"
   },
+  "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/test-support/**"]
 }

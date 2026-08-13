@@ -21,9 +21,12 @@ export default tseslint.config(
     files: ['**/*.ts'],
     languageOptions: {
       parserOptions: {
-        projectService: {
-          allowDefaultProject: ['drizzle.config.ts'],
-        },
+        // tsconfig.json includes every .ts file in the repo, including
+        // drizzle.config.ts and the tests, so the project service resolves them
+        // all from one program. No allowDefaultProject: a file that falls into
+        // the inferred project loses its imports, and every member access on a
+        // typed value then reports "a type that cannot be resolved".
+        projectService: true,
         tsconfigRootDir: rootDir,
       },
     },

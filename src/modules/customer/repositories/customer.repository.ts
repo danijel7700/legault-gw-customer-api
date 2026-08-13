@@ -46,18 +46,6 @@ import type {
 } from './types/customer.repository.types.js';
 import { uniqueViolationConstraint } from './utils/pg-error.util.js';
 
-/**
- * The only layer that touches the database.
- *
- * This file owns the aggregate: transactions, resolution order and the public
- * contract. The per-table SQL lives in the sibling `*.queries.ts` modules, which
- * are internal — `customer_external_id` and `customer_address` have no
- * independent life and are always read and written through a customer.
- *
- * Takes its `db` rather than importing the singleton, so a test can hand it a
- * connection to a scratch database. The same parameter type accepts a
- * transaction handle, which is how the helpers below compose.
- */
 export function createCustomerRepository(db: Db): CustomerRepository {
   return {
     async findById(id: string): Promise<Customer | null> {
@@ -122,15 +110,6 @@ export function createCustomerRepository(db: Db): CustomerRepository {
       });
     },
 
-    /**
-     * Idempotent: deleting an address that is already gone is not an error and
-     * does not bump the version.
-     *
-     * If the deleted row was the preferred one, the customer is left with no
-     * preferred address. Promoting another is a service decision, so nothing is
-     * promoted here — and because the signature returns nothing, a caller that
-     * needs to know must re-read `listAddresses`.
-     */
     async deleteAddress(customerId: string, addressId: string): Promise<void> {
       await db.transaction(async (tx) => {
         if (await deleteAddressRow(tx, customerId, addressId)) {
@@ -139,11 +118,6 @@ export function createCustomerRepository(db: Db): CustomerRepository {
       });
     },
 
-    /**
-     * Clearing the old row and setting the new one must happen together:
-     * `customer_address_preferred_uq` is a partial unique index, so two
-     * statements outside a transaction, or in the wrong order, collide.
-     */
     async setPreferredAddress(customerId: string, addressId: string): Promise<void> {
       await db.transaction(async (tx) => {
         await clearPreferredAddress(tx, customerId, addressId);
@@ -178,8 +152,6 @@ async function upsertWithin(tx: Db, input: UpsertFromSfccInput): Promise<UpsertF
   }
 
   try {
-    // A nested transaction is a SAVEPOINT. Without it a unique violation would
-    // abort the whole outer transaction and the re-resolve below could not run.
     const created = await tx.transaction(async (savepoint) =>
       insertAggregate(savepoint, {
         brand: input.brand,
@@ -198,9 +170,6 @@ async function upsertWithin(tx: Db, input: UpsertFromSfccInput): Promise<UpsertF
       throw error;
     }
 
-    // Another transaction created this customer between our resolve and our
-    // insert. It has committed by now — the insert only raised 23505 once it
-    // did — so a single re-resolve finds it. No retry loop.
     logger.info({ constraint }, 'Concurrent customer insert — re-resolving');
 
     const racedId = await resolveCustomerId(tx, input);
@@ -213,12 +182,6 @@ async function upsertWithin(tx: Db, input: UpsertFromSfccInput): Promise<UpsertF
   }
 }
 
-/**
- * External ids first, then email — the documented resolution order.
- *
- * Step 2 is what stops a customer that arrived from another source, with no
- * SFCC id yet, from being duplicated.
- */
 async function resolveCustomerId(tx: Db, input: UpsertFromSfccInput): Promise<string | undefined> {
   const byExternalId = await findCustomerIdByAnyExternalId(tx, input.brand, input.externalIds);
 

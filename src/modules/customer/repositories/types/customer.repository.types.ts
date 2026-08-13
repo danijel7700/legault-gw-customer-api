@@ -24,7 +24,7 @@ export interface ExternalIdInput {
 export interface CreateProfileInput {
   readonly email?: string | null;
   readonly firstName?: string | null;
-  readonly lastName: string;
+  readonly lastName?: string | null;
   readonly salutation?: string | null;
   readonly gender?: Gender | null;
   readonly birthDate?: string | null;
@@ -61,7 +61,7 @@ export interface CreateCustomerInput {
 export interface UpdateProfileInput {
   readonly email?: string | null;
   readonly firstName?: string | null;
-  readonly lastName?: string;
+  readonly lastName?: string | null;
   readonly salutation?: string | null;
   readonly gender?: Gender | null;
   readonly birthDate?: string | null;
