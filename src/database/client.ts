@@ -4,7 +4,7 @@ import { Pool } from 'pg';
 import { logger } from '../shared/logger/logger.js';
 
 import { dbConfig } from './config.js';
-import * as schema from './schema/index.js';
+import * as schema from './schemas/index.js';
 
 const pool = new Pool({
   host: dbConfig.host,

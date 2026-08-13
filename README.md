@@ -36,7 +36,7 @@ pnpm lint       # eslint
 pnpm format     # prettier --write
 pnpm check      # typecheck + lint + format:check
 
-pnpm db:generate  # drizzle-kit: schema/ -> a migration
+pnpm db:generate  # drizzle-kit: schemas/ -> a migration
 pnpm db:migrate   # apply pending migrations
 pnpm db:studio    # browse the database
 ```
@@ -425,7 +425,9 @@ src/
     index.ts                        THE ENTRY POINT — db, closeDatabase, checkDatabaseConnection
     config.ts                       DB_* parsing; own zod parse so drizzle-kit can load it
     client.ts                       pg Pool + drizzle instance + drain + SELECT 1 probe
-    schema/index.ts                 table definitions land here (empty barrel for now)
+    schemas/                        table definitions, one folder per domain
+      index.ts                      one line per domain
+      customer/                     enums/ tables/ types/ utils/
     migrations/                     drizzle-kit output; committed, applied by db:migrate
 
   config/
@@ -711,19 +713,88 @@ Still unverified:
 ## The database layer
 
 PostgreSQL (Aurora in every deployed environment) through [Drizzle ORM](https://orm.drizzle.team), in
-`src/database/`. What is there today is the **connection and the tooling** — one `pg` pool, one Drizzle
-instance, a readiness probe, a shutdown hook, and the drizzle-kit scripts. No tables, no models, no
-repositories, no queries yet; `schema/` is already threaded through `drizzle()` so they slot in without
-touching `client.ts`.
+`src/database/`. The connection, the tooling and the customer schema live here — one `pg` pool, one
+Drizzle instance, a readiness probe, a shutdown hook, the drizzle-kit scripts, and the table
+definitions. No repositories and no queries yet: nothing in here reads or writes a row.
 
 ```
 database/
   index.ts      THE ENTRY POINT — db, closeDatabase, checkDatabaseConnection
   config.ts     DB_* parsing and validation; fails fast at module load
   client.ts     pg Pool + drizzle instance + drain + SELECT 1 probe
-  schema/       table definitions (empty barrel for now)
+  schemas/      table definitions, one folder per domain
+    index.ts    one line per domain — the barrel drizzle() and drizzle-kit read
+    customer/   enums/ tables/ types/ utils/, each behind its own barrel
   migrations/   drizzle-kit output; committed, applied by db:migrate
 ```
+
+### Schemas are grouped by domain
+
+`schemas/customer/` is the shape every domain follows: `enums/`, `tables/`, `types/`, `utils/`, each
+with an `index.ts`, and a domain barrel re-exporting all four. Imports elsewhere go through a folder,
+never at an individual file.
+
+**Adding a domain** — `loyalty/`, `pets/` — is a new folder plus one line in `schemas/index.ts`. It is
+invisible to both `drizzle()` and drizzle-kit until that line exists, because `drizzle.config.ts`
+points at a single file rather than a glob. Nothing else is edited: no shared enum file, no central
+table registry.
+
+Within a domain, **one file per table** (`customer.table.ts`), with `relations()` in
+`tables/relations.ts`. Enums live in exactly one place — `enums/` — and are imported both by the tables
+for `$type<T>()` and by the hand-written interfaces in `types/`. There is deliberately no second set
+of enums under `types/`.
+
+`types/` holds the domain interfaces the API layer will speak, decoupled from Drizzle, plus
+`inferred.types.ts` for the `InferSelectModel` / `InferInsertModel` row aliases. Stored fields are
+`| null`, never `?` — in the store a field always exists, it may have no value; `?` is reserved for
+update DTOs, where `undefined` means "don't touch" and `null` means "clear".
+
+Note `Brand`, `CustomerProfile` and `CustomerAddress` exist both here and in
+`src/modules/customer/types/` — the latter is the SFCC-facing API contract with different nullability.
+They never collide in practice because imports are per-folder; a mapper that needs both aliases on
+import. `brand` deliberately stores the same lowercase `'rens' | 'mondou'` as the `x-brand` header, so
+there is no case mapping anywhere.
+
+### Enums are `text`, never `pgEnum`
+
+Every enum column is `text('col').$type<Language>()` with the union defined in `enums/`. Adding a value
+to a Postgres enum is painful in a migration, and these lists will grow — `EXTERNAL_SYSTEMS` already
+has NAV and SFMC entries that are not in use yet. With `text`, a new value is a code change and no
+migration at all. TypeScript `enum` is separately ruled out: `erasableSyntaxOnly` rejects it, so the
+`as const` idiom is mandatory here as everywhere else in the repo.
+
+The one column left untyped is `customer_external_id.id_type`. `EXTERNAL_ID_TYPES` enumerates the
+known values and `ExternalId.idType` uses that union, but the column stays plain `text` so the NAV and
+SFMC types can start arriving without a schema change.
+
+### The partial indexes, and one hand-written index
+
+Four indexes carry real semantics, and they live in the table files' array callback:
+
+| Index                           | Enforces                                                                                                  |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `customer_brand_email_uq`       | one customer per brand per email, `WHERE email IS NOT NULL` so NAV in-store members with no email coexist |
+| `customer_external_id_uq`       | the identity map the whole service resolves through                                                       |
+| `customer_address_preferred_uq` | one preferred address per customer, `WHERE is_preferred`                                                  |
+| `customer_address_sfcc_id_uq`   | no duplicate address rows on re-sync, `WHERE sfcc_address_id IS NOT NULL`                                 |
+
+**Predicates must be written as literal SQL with bare snake_case column names** —
+`sql\`email IS NOT NULL\``, not `sql\`${t.email} IS NOT NULL\``. drizzle-kit serializes index *columns*
+with its `"indexes"` invokeSource but the *where* predicate without it, so an interpolated column
+renders as `"customer"."email"`, which Postgres rejects inside `CREATE INDEX ... WHERE`. An
+interpolated value becomes `$1` with the parameters discarded.
+
+**`INCLUDE (customer_id)` on `customer_external_id_uq` is hand-written into
+`migrations/0000_*.sql`.** drizzle-orm 0.45.2 has no DSL for covering indexes — no `.include()`, and
+`.with()` only emits `WITH (k=v)` storage parameters. The `INCLUDE` makes the resolve lookup an
+index-only scan, and that is the index every authenticated request hits.
+
+This is safe but needs to be understood: `db:generate` diffs the last `meta/*_snapshot.json` against
+the TypeScript schema and **never opens a connection**, so the hand-written clause is in neither side
+of the diff and can never be dropped. Verified — a second `db:generate` reports no changes. The
+trade-off is that Drizzle will never manage that index either, and **`drizzle-kit push` would break
+it**: push does introspect, and it reads an `INCLUDE` column as an ordinary trailing key column. The
+absence of a `db:push` script is now load-bearing, not just a preference.
 
 `drizzle.config.ts` sits at the repo root because that is where drizzle-kit looks for it. It hands the
 CLI the dialect, the schema path, the output directory, and a DSN composed by `buildConnectionString`
@@ -779,8 +850,9 @@ the code because they are absences:
   `db:generate` would hang instead of exiting and `db:studio` would interleave log lines into its
   output. `config.ts` throws plain `Error`s only. (`client.ts` may use the logger — it is app-process
   only.)
-- **`database/schema/index.ts` must never import `client.ts` or the logger**, for the same reason:
-  drizzle-kit loads the schema barrel directly, so anything reachable from it runs there too.
+- **Nothing reachable from `database/schemas/index.ts` may import `client.ts` or the logger**, for the
+  same reason: drizzle-kit loads the schema barrel directly, so every table, enum and util file behind
+  it runs inside the drizzle-kit process too.
 
 ### `DB_*` cannot come through `ssm-bootstrap`
 
@@ -824,13 +896,14 @@ Confirm it with `curl localhost:3000/health/ready`.
 ### Migrations
 
 ```bash
-pnpm db:generate   # diff schema/ against the last snapshot, write SQL to migrations/
+pnpm db:generate   # diff schemas/ against the last snapshot, write SQL to migrations/
 pnpm db:migrate    # apply pending migrations
 pnpm db:studio     # browse the database
 ```
 
-Edit `schema/`, run `db:generate`, **read the emitted SQL**, commit it alongside the schema change,
-then `db:migrate`. Until tables exist, `db:generate` reports no changes and writes nothing — expected.
+Edit `schemas/`, run `db:generate`, **read the emitted SQL**, commit it alongside the schema change,
+then `db:migrate`. Reading the SQL is not optional: it is where you catch a partial-index predicate
+that serialized wrong, or a column rename that drizzle-kit decided was a drop plus an add.
 
 There is deliberately **no `db:push` script**. `drizzle-kit push` diffs straight against a live
 database with no migration file, which is fine on a laptop and unreviewable in production. One path,
@@ -840,9 +913,11 @@ Migrations are not part of the runtime image — `tsc` emits TypeScript output o
 `migrations/*.sql` never reaches `dist/`. `db:migrate` runs from a checkout with devDependencies
 installed (a CI job or a one-off task), and the app does **not** migrate at boot.
 
-**Adding a table** is one file per table in `schema/`, re-exported from `schema/index.ts`, then
-`db:generate`. `schema` is already threaded through `drizzle()`, so `db.query.<table>` — the relational
-query API — starts working as soon as the barrel is non-empty. No change to `client.ts`.
+**Adding a table** is one file under the domain's `tables/`, re-exported from that folder's barrel,
+then `db:generate`. `schemas` is threaded through `drizzle()`, so `db.query.<table>` — the relational
+query API — picks it up as soon as the barrel exports it. No change to `client.ts`. Add the
+`relations()` entry in `tables/relations.ts` at the same time, or the table is queryable but not
+joinable.
 
 ### The pool
 

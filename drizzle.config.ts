@@ -8,7 +8,7 @@ const url = dbConfig.ssl
 
 export default defineConfig({
   dialect: 'postgresql',
-  schema: './src/database/schema/index.ts',
+  schema: './src/database/schemas/index.ts',
   out: './src/database/migrations',
   dbCredentials: { url },
 });
