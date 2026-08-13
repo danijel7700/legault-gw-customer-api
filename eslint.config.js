@@ -71,8 +71,14 @@ export default tseslint.config(
       'src/config/ssm-bootstrap.ts',
       'src/shared/logger/logger.ts',
       'src/database/config.ts',
+      'src/test-support/test-db.ts',
     ],
     rules: { 'no-restricted-properties': 'off' },
+  },
+
+  {
+    files: ['src/**/*.test.ts'],
+    rules: { '@typescript-eslint/no-floating-promises': 'off' },
   },
 
   {

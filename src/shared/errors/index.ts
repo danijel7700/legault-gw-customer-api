@@ -7,6 +7,7 @@ export {
   ForbiddenError,
   NotFoundError,
   PayloadTooLargeError,
+  PreconditionFailedError,
   UnauthorizedError,
   ValidationError,
 } from './client-errors.js';

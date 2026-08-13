@@ -38,6 +38,13 @@ export class ConflictError extends HttpError {
   }
 }
 
+/** A supplied precondition did not hold — a failed `If-Match` against an ETag. */
+export class PreconditionFailedError extends HttpError {
+  constructor(message = 'Precondition failed', options: HttpErrorOptions = {}) {
+    super(412, message, { code: ErrorCode.PRECONDITION_FAILED, ...options });
+  }
+}
+
 export class PayloadTooLargeError extends HttpError {
   constructor(message = 'Payload too large', options: HttpErrorOptions = {}) {
     super(413, message, { code: ErrorCode.PAYLOAD_TOO_LARGE, ...options });

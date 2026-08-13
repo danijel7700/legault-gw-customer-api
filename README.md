@@ -31,10 +31,11 @@ pnpm build      # tsc -> dist/
 pnpm start      # node dist/server.js
 pnpm clean      # rm -rf dist
 
-pnpm typecheck  # tsc --noEmit (src/ and drizzle.config.ts)
+pnpm typecheck  # tsc --noEmit (src/ including tests, and drizzle.config.ts)
 pnpm lint       # eslint
 pnpm format     # prettier --write
 pnpm check      # typecheck + lint + format:check
+pnpm test       # node:test against a real PostgreSQL — needs the DB_* block
 
 pnpm db:generate  # drizzle-kit: schemas/ -> a migration
 pnpm db:migrate   # apply pending migrations
@@ -933,6 +934,121 @@ The pool itself is never exported. Callers get `db`; a per-request pool is the c
 `closeDatabase()` drains it from `registerShutdownHandlers` in `server.ts`, **after** the HTTP server
 has stopped accepting connections, so in-flight queries finish. ECS sends `SIGTERM` on every deploy, so
 this runs on every deploy. It is idempotent — `pool.end()` rejects if called twice.
+
+## The customer repository
+
+`src/modules/customer/repositories/customer.repository.ts` is the only code in the app that touches
+the database. It returns domain types (`Customer`, `CustomerAddress`, `ExternalId`) and never a
+Drizzle row, so no caller above it sees a row shape or an ORM type.
+
+```
+modules/customer/
+  repositories/
+    customer.repository.ts             THE ENTRY POINT — createCustomerRepository(db)
+    customer.queries.ts                customer row + the aggregate read
+    customer-address.queries.ts        customer_address rows
+    customer-external-id.queries.ts    customer_external_id rows
+    types/customer.repository.types.ts input types + the Db alias
+    utils/pg-error.util.ts             unique-violation inspection
+  mappers/customer.mapper.ts           rows -> domain types
+  errors/customer.error.ts             the three typed failures
+```
+
+**One repository, three tables.** `customer_external_id` and `customer_address` have no independent
+life — they are always read and written through a customer, which is what guarantees the parent's
+`version` moves and the one-preferred-address invariant holds. So the `*.queries.ts` modules are
+**internal**: they hold the per-table SQL, `customer.repository.ts` owns the aggregate logic
+(transactions, resolution order, the public contract), and the module barrel exports only
+`createCustomerRepository`. Splitting them into peer repositories would hand callers a way around
+those invariants.
+
+**It takes its `db` rather than importing the singleton.** `createCustomerRepository(db)` is what makes
+the layer testable at all: `database/client.ts` builds its pool at module load from env, and under
+static ESM imports that cannot be re-pointed afterwards, so a test that imported the singleton would
+silently run against the dev database. The same parameter type accepts a transaction handle
+(`PgTransaction extends PgDatabase`), which is how the query modules compose without a union type —
+each takes a `Db` and neither knows nor cares whether it is inside a transaction.
+
+### Patch semantics
+
+`updateProfile` is the one place `?` and `null` differ: an absent key leaves the column untouched, an
+explicit `null` clears it, a value sets it. The SET object is built by walking the keys the caller sent
+— **never by spreading**, which cannot tell an absent key from one set to `undefined`.
+
+`upsertFromSfcc` is the opposite: present fields overwrite, absent fields are left alone, and it never
+clears a column. A source system omitting a field has no opinion about it, which is not a request to
+delete it. Its addresses are reconciled by upserting the supplied ones; rows we hold that the payload
+does not mention are **left alone**, because a partial payload must not silently delete history.
+
+`normalizeEmail` and `normalizePostalCode` are applied at this boundary, on the way in, so nothing
+above the repository has to remember. A placeholder email normalizes to `null` and can therefore never
+be stored, matched on, or returned.
+
+### Concurrency
+
+`updateProfile` takes an optional `expectedVersion` and carries it into the `WHERE`. Zero rows affected
+is ambiguous, so it re-reads to answer whether the row is gone (`CustomerNotFoundError`, 404) or the
+version moved (`CustomerVersionConflictError`, 412).
+
+`upsertFromSfcc` resolves external ids, then email, then creates. Two first-time requests for the same
+customer can race, so the insert runs inside a **nested transaction** — a `SAVEPOINT`. That matters:
+a `23505` aborts the entire transaction it occurs in, so without the savepoint the recovery path could
+not run any further statements. On catching one it re-resolves **once**, keyed off the constraint name,
+and returns the row the other transaction committed. There is no retry loop.
+
+Detecting that `23505` needs care: drizzle wraps every driver error in `DrizzleQueryError`, so the pg
+error and its `code` are one level down in `cause`.
+
+### Errors and PII
+
+Three typed errors, all `HttpError` subclasses so `errorHandler` maps them without a special case:
+
+| Error                          | Status | Code                        |
+| ------------------------------ | ------ | --------------------------- |
+| `CustomerNotFoundError`        | 404    | `CUSTOMER_RECORD_NOT_FOUND` |
+| `CustomerVersionConflictError` | 412    | `CUSTOMER_VERSION_CONFLICT` |
+| `DuplicateExternalIdError`     | 409    | `DUPLICATE_EXTERNAL_ID`     |
+
+`CUSTOMER_RECORD_NOT_FOUND` is deliberately distinct from `CUSTOMER_NOT_FOUND`, which the SFCC provider
+emits: the lazy-provisioning path has to tell "we hold no row yet" from "no such shopper upstream".
+
+**No repository error carries a drizzle or pg error as `cause`.** `DrizzleQueryError`'s message is the
+failing SQL plus its bound parameters — which include the customer's email — and `err.cause` is not
+scrubbed by the error handler. Only the constraint name and the customer id ever escape. For the same
+reason nothing here logs a row or an aggregate: `REDACT_PATHS` does not cover `birthDate`, `postalCode`,
+`street1`, `city`, or an external id `value` (which is an email when the id type is `placeholderEmail`),
+and it cannot reach three levels deep into `customer.profile.email`.
+
+`DuplicateExternalIdError` is raised when a supplied id already resolves to a different customer. When
+a payload's ids disagree with each other, which one resolution picks is arbitrary and does not matter —
+linking then finds one of the others pointing elsewhere and fails closed. Merging is never implicit.
+
+## Tests
+
+`node:test` and `node:assert/strict`, no framework:
+
+```bash
+pnpm test
+```
+
+These are integration tests against a real PostgreSQL, not unit tests with a fake. `src/test-support/
+test-db.ts` creates a scratch `core_customer_api_test` database, builds its own pool, and brings the
+schema up with the **programmatic migrator** — `migrate(db, { migrationsFolder })`, replaying the same
+SQL production gets, including the hand-written covering index that the TypeScript schema cannot
+express and a push would get wrong. It never imports `client.ts`, avoiding both the module-load env
+parse and the `pino-pretty` worker thread that would keep the runner alive.
+
+Three pieces of wiring worth knowing:
+
+- Tests stay inside `tsconfig.json`'s `include`, so eslint's `projectService` and `tsc --noEmit` both
+  see them. They are kept out of `dist/` by `tsconfig.build.json`, which is what `pnpm build` uses.
+  Excluding them from `tsconfig.json` instead would have needed an `allowDefaultProject` entry, and
+  those globs cannot contain `**`.
+- `no-floating-promises` is off for `*.test.ts`: `describe`/`it` return `Promise<void>` in @types/node,
+  so every block would otherwise need a `void` prefix.
+- `--test-concurrency=1`. Parallel writers against one schema trip the partial unique indexes.
+
+`pnpm check` deliberately does **not** run them — it stays hermetic, and the tests need a database.
 
 ## Extending it
 
