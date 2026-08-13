@@ -31,17 +31,25 @@ pnpm build      # tsc -> dist/
 pnpm start      # node dist/server.js
 pnpm clean      # rm -rf dist
 
-pnpm typecheck  # tsc --noEmit
+pnpm typecheck  # tsc --noEmit (src/ and drizzle.config.ts)
 pnpm lint       # eslint
 pnpm format     # prettier --write
 pnpm check      # typecheck + lint + format:check
+
+pnpm db:generate  # drizzle-kit: schema/ -> a migration
+pnpm db:migrate   # apply pending migrations
+pnpm db:studio    # browse the database
 ```
+
+The `db:*` scripts need a reachable PostgreSQL and the `DB_*` block set — see
+[The database layer](#the-database-layer) for local setup and the migration workflow.
 
 ## The API surface
 
 | Endpoint                 | Purpose                                                                   |
 | ------------------------ | ------------------------------------------------------------------------- |
 | `GET /health`            | Liveness, for the load balancer. No brand, no version.                    |
+| `GET /health/ready`      | Readiness — can it reach PostgreSQL. No brand, no version.                |
 | `GET /v1/health`         | Which SFCC org this brand is pointed at. Needs `x-brand`.                 |
 | `GET /v1/member/profile` | The shopper's profile. Needs `x-brand`, `x-customer-id`, `Authorization`. |
 
@@ -138,8 +146,9 @@ gateway rather than a client composing URLs.
 would be one less dependency, but it needs Node ≥ 20.12 and would put a version requirement in the
 npm scripts; loading in code keeps `dev` and `start` running on any supported Node. Three rules:
 
-- **Missing `.env` is fine.** Every variable has a default in the schema, so the service starts
-  with no file at all.
+- **Missing `.env` is fine for the variables that have defaults.** `NODE_ENV`, `PORT` and `LOG_LEVEL`
+  all fall back, so no file is needed to start reading the schema — but the SFCC credentials and the
+  `DB_*` block are required and have none, so a real boot needs them present.
 - **The real environment wins.** A variable already set in the shell, or by ECS/Kubernetes,
   overrides the value in `.env` (`override: false`). Nothing in a stray file can shadow platform
   config.
@@ -162,8 +171,15 @@ Invalid environment configuration:
 ```
 
 Adding a variable is three edits: the name in `src/config/constants/env-keys.constant.ts`, a rule in
-the zod schema, a field on `Config`. Nothing outside `src/config/` and `src/shared/logger/logger.ts`
-may read `process.env` — an ESLint rule enforces it.
+the zod schema, a field on `Config`. Nothing outside `src/config/`, `src/shared/logger/logger.ts` and
+`src/database/config.ts` may read `process.env` — an ESLint rule enforces it.
+
+The `DB_*` block is the one exception to that ritual: the keys are registered in
+`env-keys.constant.ts` like everything else, but they are validated by `src/database/config.ts`
+rather than by `envSchema`, and they do not appear on `Config`. The database layer needs to be
+loadable by `drizzle-kit`, which runs outside the app process and has no business supplying SFCC
+credentials to generate a migration. See [The database layer](#the-database-layer) — including why
+`DB_*` cannot be resolved through `ssm-bootstrap`.
 
 `NODE_ENV` deliberately does not encode the deploy environment. It has three values —
 `development`, `test`, `production` — and drives log formatting, nothing else. Staging runs
@@ -211,6 +227,11 @@ sync; adding a variable to the list in `server.ts` is the only step.
 
 Set as **literal env vars in the task definition**, not resolved from SSM: `APP_SSM_PREFIX`,
 `AWS_REGION`, `NODE_ENV`, `PORT`, `LOG_LEVEL`, and the two redirect URIs.
+
+The `DB_*` variables also come from the task definition — the plain ones in `environment`,
+`DB_PASSWORD` in `secrets` so the ECS agent injects it from Secrets Manager. They cannot go through
+`resolveAppSsmSecrets()`: the database layer parses its env at module load, which ESM evaluates before
+`bootstrap()`'s body runs, so SSM resolution would come too late.
 
 There is no `Dockerfile` and nothing under `.github/` in this repo yet — packaging and CI/CD are the
 infrastructure team's and will land later.
@@ -266,7 +287,7 @@ after `loadConfig()`.
 
 ## Health endpoints
 
-Two, for two different audiences.
+Three, for three different audiences.
 
 `GET /health` is the load balancer's. It is mounted at the root in `createApiRouter()`, ahead of the
 `/:version` mount, and carries no brand, no version and no SFCC identifiers:
@@ -279,6 +300,12 @@ Unversioned on purpose — a target group must not be coupled to the lifetime of
 the per-brand response below is config that should not land in access logs every few seconds. A flat
 200 is the honest signal: `bootstrap()` runs `loadConfig()` before `listen()`, so an open port
 already proves configuration resolved.
+
+`GET /health/ready` is readiness rather than liveness: it runs `SELECT 1` through the PostgreSQL pool
+and answers `200 { "status": "ok", "database": "up" }`, or the standard `503` error envelope when the
+database is unreachable. The pool connects lazily, so this is the first place a bad host or a wrong
+password actually surfaces. Kept separate from `/health` deliberately — a target group must not
+deregister a healthy task because the database blipped.
 
 `GET /v1/health` is for humans — it resolves `x-brand` and echoes which SFCC instance that brand is
 pointed at, the fastest way to confirm an environment is wired to the org you think it is:
@@ -331,9 +358,18 @@ access-log line at all.
    the process with every problem listed at once.
 3. `createApp()` — builds the Express app. Does not listen, so tests can drive it in-process.
 4. `listen()`, then `keepAliveTimeout` / `headersTimeout`, then SIGTERM/SIGINT handlers that drain
-   connections with a 10 s force-exit backstop.
+   connections with a 10 s force-exit backstop, then the PostgreSQL pool.
 
 The app imports `config`, which throws if read before step 2.
+
+**Step 0, before any of this:** ESM evaluates the module graph, and `src/database/config.ts` validates
+the `DB_*` block as it is loaded. Missing database config therefore fails earlier than missing app
+config — before step 1, so SSM cannot supply it. Constructing the pool opens no connection (`pg` dials
+lazily), so a wrong host or password surfaces at `/health/ready`, not at boot.
+
+Shutdown runs in the same order in reverse: the HTTP server stops accepting connections, in-flight
+queries finish, then `closeDatabase()` drains the pool, then the process exits. ECS sends `SIGTERM` on
+every deploy, so this path runs on every deploy.
 
 Step 1 means the port is closed for the duration of the SSM round-trips, so a deployment needs a
 health-check grace period. Step 4's timeouts are 65 s and 66 s: both must sit above the load
@@ -384,6 +420,13 @@ src/
       errors/                       sfcc-request (502), customer (mapped 4xx)
       utils/                        with-guest-token, upstream-status, basic-auth,
                                     scrub-sensitive, problem-slug
+
+  database/                         PostgreSQL: the connection, not the data
+    index.ts                        THE ENTRY POINT — db, closeDatabase, checkDatabaseConnection
+    config.ts                       DB_* parsing; own zod parse so drizzle-kit can load it
+    client.ts                       pg Pool + drizzle instance + drain + SELECT 1 probe
+    schema/index.ts                 table definitions land here (empty barrel for now)
+    migrations/                     drizzle-kit output; committed, applied by db:migrate
 
   config/
     constants/                      env-keys, node-envs, log-levels, brand-identifiers
@@ -664,6 +707,157 @@ Still unverified:
 - **What a mismatched `x-customer-id` returns for a _registered_ token.** Expected to be
   `400 invalid-customer` → 404, matching the guest-token result, but not yet measured. It fails closed
   either way; only the status shape is in question.
+
+## The database layer
+
+PostgreSQL (Aurora in every deployed environment) through [Drizzle ORM](https://orm.drizzle.team), in
+`src/database/`. What is there today is the **connection and the tooling** — one `pg` pool, one Drizzle
+instance, a readiness probe, a shutdown hook, and the drizzle-kit scripts. No tables, no models, no
+repositories, no queries yet; `schema/` is already threaded through `drizzle()` so they slot in without
+touching `client.ts`.
+
+```
+database/
+  index.ts      THE ENTRY POINT — db, closeDatabase, checkDatabaseConnection
+  config.ts     DB_* parsing and validation; fails fast at module load
+  client.ts     pg Pool + drizzle instance + drain + SELECT 1 probe
+  schema/       table definitions (empty barrel for now)
+  migrations/   drizzle-kit output; committed, applied by db:migrate
+```
+
+`drizzle.config.ts` sits at the repo root because that is where drizzle-kit looks for it. It hands the
+CLI the dialect, the schema path, the output directory, and a DSN composed by `buildConnectionString`
+from the same `DB_*` variables the app uses — one source of truth for the credentials.
+
+Nine discrete variables, matching the convention in the sibling services, deliberately not a single
+`DATABASE_URL`:
+
+| Variable                | Required | Default                                         |
+| ----------------------- | -------- | ----------------------------------------------- |
+| `DB_HOST`               | yes      | —                                               |
+| `DB_PORT`               | yes      | —                                               |
+| `DB_USERNAME`           | yes      | —                                               |
+| `DB_PASSWORD`           | yes      | —                                               |
+| `DB_NAME`               | yes      | —                                               |
+| `DB_SSL`                | no       | `true` when `NODE_ENV=production`, else `false` |
+| `DB_POOL_MAX`           | no       | `10`                                            |
+| `DB_IDLE_TIMEOUT_MS`    | no       | `30000`                                         |
+| `DB_CONNECT_TIMEOUT_MS` | no       | `5000`                                          |
+
+There is **no default for the host, the credentials or the database name** — a missing one throws
+before the process listens, naming the variable:
+
+```
+Invalid database configuration:
+  - DB_HOST: Invalid input: expected string, received undefined
+```
+
+A blank value is not the same as an absent one: `DB_SSL=` is a parse error, not a fallback. Leave the
+optional variables out of `.env` entirely to take their defaults.
+
+When `DB_SSL` is true the pool passes `ssl: { rejectUnauthorized: false }`. Aurora terminates TLS with
+an AWS-issued chain that is not in Node's trust store, so verification is off — the transport is still
+encrypted. `DB_POOL_MAX` is **per container**: it multiplies by task count against Aurora's
+`max_connections`, so ten connections across twenty tasks is two hundred.
+
+### Why this layer parses its own env
+
+Everywhere else in this service, env goes through `src/config/` and is read off the frozen `config`
+object. This layer does not — `src/database/config.ts` runs its own dotenv-backed zod parse at module
+load, and it is the fourth file on the ESLint `process.env` allow-list.
+
+The reason is `drizzle.config.ts`, which runs **outside the app process**. Going through `loadConfig()`
+would mean every SFCC variable had to be present just to generate a migration, and the `config` proxy
+throws when read before `bootstrap()` has called it. A self-contained parse keeps `pnpm db:generate`
+working with nothing but the `DB_*` block set.
+
+Two rules follow from drizzle-kit executing these files in its own process, and both are invisible in
+the code because they are absences:
+
+- **`database/config.ts` must never import the logger.** Outside production, pino attaches a
+  `pino-pretty` transport, which spawns a worker thread; a live worker keeps the event loop alive, so
+  `db:generate` would hang instead of exiting and `db:studio` would interleave log lines into its
+  output. `config.ts` throws plain `Error`s only. (`client.ts` may use the logger — it is app-process
+  only.)
+- **`database/schema/index.ts` must never import `client.ts` or the logger**, for the same reason:
+  drizzle-kit loads the schema barrel directly, so anything reachable from it runs there too.
+
+### `DB_*` cannot come through `ssm-bootstrap`
+
+ESM evaluates the whole module graph before `bootstrap()`'s body runs, and `client.ts` is reachable
+from `app.ts`. So `database/config.ts` parses **before** `resolveAppSsmSecrets()` has populated
+`process.env`. Adding `DB_*` to the lists in `server.ts` cannot work.
+
+The variables have to be in the environment at exec time: the ECS task-definition `environment` block
+for the plain values, `secrets` — injected by the agent from Secrets Manager — for `DB_PASSWORD`.
+Nothing database-related belongs in a committed `.env`. If a deployment ever genuinely has to source
+credentials through `ssm-bootstrap`, the fix is to make `db` lazy behind a `getDb()` and move the parse
+inside it.
+
+### Local setup
+
+Point `DB_*` at any local PostgreSQL 16. With the shared `legault-core-postgres` container, which
+publishes on **5433**:
+
+```bash
+docker exec legault-core-postgres psql -U legault -d postgres -v ON_ERROR_STOP=1 \
+  -c "CREATE ROLE postgres WITH LOGIN CREATEDB PASSWORD '<local-only-password>'"
+
+docker exec legault-core-postgres psql -U legault -d postgres -v ON_ERROR_STOP=1 \
+  -c "CREATE DATABASE core_customer_api OWNER postgres"
+```
+
+`CREATEDB` rather than `SUPERUSER` — the app only needs to own its own database. Then in `.env`, which
+is gitignored and the only place the password lives:
+
+```dotenv
+DB_HOST=localhost
+DB_PORT=5433
+DB_USERNAME=postgres
+DB_PASSWORD=<local-only-password>
+DB_NAME=core_customer_api
+DB_SSL=false
+```
+
+Confirm it with `curl localhost:3000/health/ready`.
+
+### Migrations
+
+```bash
+pnpm db:generate   # diff schema/ against the last snapshot, write SQL to migrations/
+pnpm db:migrate    # apply pending migrations
+pnpm db:studio     # browse the database
+```
+
+Edit `schema/`, run `db:generate`, **read the emitted SQL**, commit it alongside the schema change,
+then `db:migrate`. Until tables exist, `db:generate` reports no changes and writes nothing — expected.
+
+There is deliberately **no `db:push` script**. `drizzle-kit push` diffs straight against a live
+database with no migration file, which is fine on a laptop and unreviewable in production. One path,
+one artefact: every schema change reaches every database as a committed migration.
+
+Migrations are not part of the runtime image — `tsc` emits TypeScript output only, so
+`migrations/*.sql` never reaches `dist/`. `db:migrate` runs from a checkout with devDependencies
+installed (a CI job or a one-off task), and the app does **not** migrate at boot.
+
+**Adding a table** is one file per table in `schema/`, re-exported from `schema/index.ts`, then
+`db:generate`. `schema` is already threaded through `drizzle()`, so `db.query.<table>` — the relational
+query API — starts working as soon as the barrel is non-empty. No change to `client.ts`.
+
+### The pool
+
+One instance for the process, created at module load. `new Pool()` opens no connection — `pg` dials
+lazily — so a wrong host or password surfaces at `/health/ready`, not at boot. An `error` listener
+catches idle clients dropped by the server (an Aurora failover, an idle timeout), which would otherwise
+be an unhandled `error` event and take the process down; the pool discards the client and opens a new
+one on demand.
+
+The pool itself is never exported. Callers get `db`; a per-request pool is the classic way to exhaust
+`max_connections`.
+
+`closeDatabase()` drains it from `registerShutdownHandlers` in `server.ts`, **after** the HTTP server
+has stopped accepting connections, so in-flight queries finish. ECS sends `SIGTERM` on every deploy, so
+this runs on every deploy. It is idempotent — `pool.end()` rejects if called twice.
 
 ## Extending it
 

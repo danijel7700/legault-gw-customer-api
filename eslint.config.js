@@ -21,7 +21,9 @@ export default tseslint.config(
     files: ['**/*.ts'],
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: ['drizzle.config.ts'],
+        },
         tsconfigRootDir: rootDir,
       },
     },
@@ -64,11 +66,11 @@ export default tseslint.config(
   },
 
   {
-    // The three modules that run before, or as part of, config validation.
     files: [
       'src/config/env.config.ts',
       'src/config/ssm-bootstrap.ts',
       'src/shared/logger/logger.ts',
+      'src/database/config.ts',
     ],
     rules: { 'no-restricted-properties': 'off' },
   },

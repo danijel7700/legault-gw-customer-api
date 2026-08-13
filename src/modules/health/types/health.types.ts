@@ -13,3 +13,8 @@ export interface LivenessResponse {
   status: 'ok';
   uptime: number;
 }
+
+export interface ReadinessResponse {
+  status: 'ok';
+  database: 'up';
+}

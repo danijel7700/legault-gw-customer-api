@@ -4,6 +4,7 @@ import { createApp } from './app.js';
 import { ENVS } from './config/constants/env-keys.constant.js';
 import { loadConfig } from './config/env.config.js';
 import { getAppSsmPrefix, resolveAppSsmSecrets } from './config/ssm-bootstrap.js';
+import { closeDatabase } from './database/index.js';
 import { logger } from './shared/logger/logger.js';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -71,11 +72,17 @@ function registerShutdownHandlers(server: Server): void {
 
     server.close((error) => {
       if (error) {
+        // Abnormal path: the HTTP server would not close. The pool is left to
+        // the OS along with the sockets rather than adding a second exit route.
         logger.error({ err: error }, 'Error while closing the HTTP server');
         process.exit(1);
       }
       logger.info('HTTP server closed cleanly');
-      process.exit(0);
+
+      // Deliberately not awaited here: an async close callback trips
+      // no-misused-promises, and the forceExit timer above still fires because
+      // the pool's open sockets keep the event loop alive.
+      void closeDependencies();
     });
 
     server.closeIdleConnections();
@@ -97,6 +104,21 @@ function registerShutdownHandlers(server: Server): void {
     logger.fatal({ err: error }, 'Uncaught exception');
     process.exit(1);
   });
+}
+
+/**
+ * Runs after the HTTP server has stopped accepting connections, so in-flight
+ * queries have already finished. A failure to drain is logged, not fatal — the
+ * process is exiting either way.
+ */
+async function closeDependencies(): Promise<void> {
+  try {
+    await closeDatabase();
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to close the PostgreSQL pool');
+  }
+
+  process.exit(0);
 }
 
 bootstrap().catch((error: unknown) => {
