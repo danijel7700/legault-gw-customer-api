@@ -11,6 +11,7 @@ import { logger } from '../../../shared/logger/logger.js';
 import {
   clearPreferredAddress,
   deleteAddressRow,
+  findOldestAddressId,
   insertAddress,
   listAddressRows,
   setPreferredFlag,
@@ -118,11 +119,21 @@ export function createCustomerRepository(db: Db): CustomerRepository {
       customerId: string,
       addressId: string,
       modifiedBy: SourceSystem = 'CORE_API',
-    ): Promise<void> {
-      await db.transaction(async (tx) => {
-        if (await deleteAddressRow(tx, customerId, addressId)) {
-          await bumpCustomerVersion(tx, customerId, modifiedBy);
+    ): Promise<CustomerAddress | undefined> {
+      return db.transaction(async (tx) => {
+        const deleted = await deleteAddressRow(tx, customerId, addressId);
+
+        if (deleted === undefined) {
+          return undefined;
         }
+
+        const promoted = deleted.isPreferred
+          ? await promoteOldestAddress(tx, customerId)
+          : undefined;
+
+        await bumpCustomerVersion(tx, customerId, modifiedBy);
+
+        return promoted;
       });
     },
 
@@ -146,6 +157,15 @@ export function createCustomerRepository(db: Db): CustomerRepository {
       });
     },
   };
+}
+
+async function promoteOldestAddress(
+  tx: Db,
+  customerId: string,
+): Promise<CustomerAddress | undefined> {
+  const oldestId = await findOldestAddressId(tx, customerId);
+
+  return oldestId === undefined ? undefined : setPreferredFlag(tx, customerId, oldestId);
 }
 
 async function insertAggregate(tx: Db, input: CreateCustomerInput): Promise<Customer> {

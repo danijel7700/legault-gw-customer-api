@@ -167,6 +167,10 @@ curl -X POST -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
 updated one, and `DELETE` answers `204` with no body. All four move the customer's `version`, so the
 ETag changes on an address write just as it does on a profile write.
 
+**A `DELETE` can change which address is preferred.** Removing the preferred one promotes the oldest
+remaining in its place, and the `204` carries no body to show it — re-read the profile to see which
+address took over.
+
 **`:id` is our own row id, not the SFCC address name.** It is the `id` on every address in the
 profile response, and it is a uuid — the route rejects anything else with a 400 rather than looking
 it up and finding nothing. The service translates it into the SFCC name when it calls upstream,
@@ -195,7 +199,9 @@ Two things SFCC forces that the client is not made to know about:
 - **Every address `PATCH` must carry `addressId`, `countryCode` and `lastName`**, changing or not.
   They are filled from the stored row, and a client-supplied value wins.
 - **A `PUT /preferred` is that same `PATCH`** with `preferred: true`. SFCC has no dedicated endpoint
-  and demotes the previous preferred address itself, so it is one upstream call.
+  and demotes the previous preferred address itself, so it is one upstream call. It does **not**
+  promote a replacement when the preferred address is deleted, which is why that case sends a second
+  `PATCH` of its own.
 
 If the stored row is missing one of those three fields, the request is a **422** rather than a patch
 padded with empty strings. It means the row was provisioned incompletely, which is a thing worth
@@ -779,6 +785,15 @@ on an update and to `false` on a create.
 asked for — and `repo.deleteAddress` already ignores a row that is not there, moving the version only
 when something actually was.
 
+**Deleting the preferred address promotes the oldest one left**, in the same transaction as the
+delete, so a shopper who removes their default gets a new one rather than none. The promotion is then
+mirrored to SFCC with a `PATCH preferred: true`, because SFCC demotes a previous preferred on an
+explicit promote but has no notion of choosing a replacement on a delete — a replacement we picked is
+ours to announce. That mirror is **best-effort**: the delete already succeeded and owes a 204, and
+the update mapper throws a 422 for a row stored without the fields SFCC demands, so failing a good
+delete with a 422 about a _different_ address would be indefensible. A failure is logged and the two
+disagree until something re-provisions.
+
 The repository is bound to `db` here, in a lazy module-level memo mirroring `getSfccProvider` and
 `getBrandConfigMap`. `createCustomerRepository(db)` has exactly one production call site, which is
 what keeps the repository itself injectable and testable against a scratch database.
@@ -1109,9 +1124,19 @@ Four indexes carry real semantics, and they live in the table files' array callb
 
 **`customer_address_preferred_uq` is a unique _index_, and Postgres cannot defer one to commit
 time.** That is why every preferred swap clears the old flag before setting the new one, inside a
-single transaction — the ordering is a correctness requirement, not a style choice. `setPreferredFlag`
-throwing on an unknown id rolls the clear back with it, so a bad id cannot strand a customer with no
-preferred address at all.
+single transaction — the ordering is a correctness requirement, not a style choice. When
+`setPreferredFlag` finds no such row `setPreferredAddress` throws, which rolls the clear back with it,
+so a bad id cannot strand a customer with no preferred address at all.
+
+A delete of the preferred row promotes a replacement in that same transaction, and needs no clear
+first — the delete has already freed the index. Doing it as a second round trip would leave a window
+with no preferred address and could race another writer.
+
+**The replacement is the oldest remaining, by `created_at` then `id`.** The second key is
+load-bearing rather than defensive: `defaultNow()` is `now()`, which in Postgres is the _transaction_
+timestamp, so every address written by one `create` or one provisioning run carries an identical
+`created_at`. Without a tiebreak the winner would vary between runs. Among tied rows a random uuid is
+arbitrary, but it is at least the same answer twice. This is the only `ORDER BY` in the repository.
 
 **Predicates must be written as literal SQL with bare snake_case column names** —
 `sql\`email IS NOT NULL\``, not `sql\`${t.email} IS NOT NULL\``. drizzle-kit serializes index *columns*

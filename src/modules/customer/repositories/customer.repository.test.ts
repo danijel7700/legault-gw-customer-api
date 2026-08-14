@@ -576,16 +576,99 @@ describe('addresses', () => {
     assert.equal(afterUpsert.metadata.version, created.metadata.version + 1);
   });
 
-  it('deleteAddress leaves no preferred address and does not promote another', async () => {
+  it('deleting the preferred address promotes the oldest one left', async () => {
     const created = await repo.create(createInput());
+    // Separate calls are separate transactions, so created_at really differs —
+    // the ordering under test is real, not incidental.
+    const work = await repo.upsertAddress(created.id, { sfccAddressId: 'Work' });
+    await repo.upsertAddress(created.id, { sfccAddressId: 'Chalet' });
     const home = await repo.upsertAddress(created.id, { sfccAddressId: 'Home', isPreferred: true });
-    await repo.upsertAddress(created.id, { sfccAddressId: 'Work' });
 
-    await repo.deleteAddress(created.id, home.id);
+    const promoted = await repo.deleteAddress(created.id, home.id);
+
+    assert.ok(promoted, 'the delete chose a replacement');
+    assert.equal(promoted.id, work.id, 'the longest-held remaining address');
+    assert.equal(promoted.isPreferred, true);
+
+    const preferred = (await repo.listAddresses(created.id)).filter((a) => a.isPreferred);
+    assert.equal(preferred.length, 1);
+    assert.equal(preferred[0]?.id, work.id);
+  });
+
+  it('promotes the survivor when the preferred address was one of two', async () => {
+    const created = await repo.create(createInput());
+    const work = await repo.upsertAddress(created.id, { sfccAddressId: 'Work' });
+    const home = await repo.upsertAddress(created.id, { sfccAddressId: 'Home', isPreferred: true });
+
+    assert.equal((await repo.deleteAddress(created.id, home.id))?.id, work.id);
 
     const addresses = await repo.listAddresses(created.id);
     assert.equal(addresses.length, 1);
-    assert.equal(addresses[0]?.isPreferred, false, 'nothing is auto-promoted');
+    assert.equal(addresses[0]?.isPreferred, true);
+  });
+
+  it('promotes nothing when the deleted address was not the preferred one', async () => {
+    const created = await repo.create(createInput());
+    const home = await repo.upsertAddress(created.id, { sfccAddressId: 'Home', isPreferred: true });
+    const work = await repo.upsertAddress(created.id, { sfccAddressId: 'Work' });
+
+    assert.equal(await repo.deleteAddress(created.id, work.id), undefined);
+
+    // The existing preferred address is left exactly where it was.
+    const addresses = await repo.listAddresses(created.id);
+    const [remaining] = addresses;
+
+    assert.equal(addresses.length, 1);
+    assert.ok(remaining);
+    assert.equal(remaining.id, home.id);
+    assert.equal(remaining.isPreferred, true);
+  });
+
+  it('promotes nothing when the preferred address was the last one', async () => {
+    const created = await repo.create(createInput());
+    const home = await repo.upsertAddress(created.id, { sfccAddressId: 'Home', isPreferred: true });
+
+    assert.equal(await repo.deleteAddress(created.id, home.id), undefined);
+    assert.equal((await repo.listAddresses(created.id)).length, 0);
+  });
+
+  it('bumps the version once on a delete that promoted, not twice', async () => {
+    const created = await repo.create(createInput());
+    await repo.upsertAddress(created.id, { sfccAddressId: 'Work' });
+    const home = await repo.upsertAddress(created.id, { sfccAddressId: 'Home', isPreferred: true });
+
+    const before = await repo.findById(created.id);
+    assert.ok(before);
+
+    await repo.deleteAddress(created.id, home.id);
+
+    const after = await repo.findById(created.id);
+    assert.ok(after);
+    // A delete is one change to the customer, however many rows it touched.
+    assert.equal(after.metadata.version, before.metadata.version + 1);
+  });
+
+  it('still promotes exactly one when every address shares a created_at', async () => {
+    // `now()` is the transaction timestamp, so addresses written by one create
+    // all tie. Which uuid wins is arbitrary — that exactly one does is not.
+    const created = await repo.create(
+      createInput({
+        addresses: [
+          { sfccAddressId: 'Home', isPreferred: true },
+          { sfccAddressId: 'Work' },
+          { sfccAddressId: 'Chalet' },
+        ],
+      }),
+    );
+    const home = created.addresses.find((a) => a.isPreferred);
+    assert.ok(home);
+
+    const promoted = await repo.deleteAddress(created.id, home.id);
+    assert.ok(promoted, 'a replacement is chosen even when created_at cannot break the tie');
+
+    const preferred = (await repo.listAddresses(created.id)).filter((a) => a.isPreferred);
+    assert.equal(preferred.length, 1);
+    assert.equal(preferred[0]?.id, promoted.id);
   });
 
   it('deleting an absent address is a no-op that does not bump the version', async () => {

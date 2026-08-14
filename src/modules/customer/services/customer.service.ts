@@ -256,14 +256,45 @@ export async function deleteAddress(
 
   await getSfccProvider(brandConfig).deleteAddress(identity, requireSfccAddressId(stored));
 
+  let promoted: StoredAddress | undefined;
+
   try {
-    await repo.deleteAddress(customer.id, addressId);
+    promoted = await repo.deleteAddress(customer.id, addressId);
   } catch (error) {
     logAddressWriteFailure(error, {
       customerId: identity.customerId,
       brand: brandConfig.brand,
       addressId,
     });
+  }
+
+  if (promoted !== undefined) {
+    await mirrorPromotion(brandConfig, identity, promoted);
+  }
+}
+
+async function mirrorPromotion(
+  brandConfig: BrandConfig,
+  identity: CustomerIdentity,
+  promoted: StoredAddress,
+): Promise<void> {
+  try {
+    await getSfccProvider(brandConfig).updateAddress(
+      identity,
+      requireSfccAddressId(promoted),
+      toSfccPreferredUpdate(promoted),
+    );
+  } catch (error) {
+    logger.error(
+      {
+        err: isHttpError(error) ? error : undefined,
+        errorName: error instanceof Error ? error.name : typeof error,
+        customerId: identity.customerId,
+        brand: brandConfig.brand,
+        addressId: promoted.id,
+      },
+      'Promoted a replacement preferred address locally but SFCC was not told — the two now disagree',
+    );
   }
 }
 

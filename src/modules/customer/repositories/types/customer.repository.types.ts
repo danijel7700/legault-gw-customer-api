@@ -118,7 +118,11 @@ export interface CustomerRepository {
     input: UpsertAddressInput,
     modifiedBy?: SourceSystem,
   ): Promise<CustomerAddress>;
-  deleteAddress(customerId: string, addressId: string, modifiedBy?: SourceSystem): Promise<void>;
+  deleteAddress(
+    customerId: string,
+    addressId: string,
+    modifiedBy?: SourceSystem,
+  ): Promise<CustomerAddress | undefined>;
   setPreferredAddress(
     customerId: string,
     addressId: string,

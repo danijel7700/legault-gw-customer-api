@@ -1,4 +1,4 @@
-import { and, eq, ne } from 'drizzle-orm';
+import { and, asc, eq, ne } from 'drizzle-orm';
 
 import {
   customerAddress,
@@ -153,13 +153,24 @@ export async function deleteAddressRow(
   tx: Db,
   customerId: string,
   addressId: string,
-): Promise<boolean> {
-  const deleted = await tx
+): Promise<CustomerAddress | undefined> {
+  const [row] = await tx
     .delete(customerAddress)
     .where(and(eq(customerAddress.customerId, customerId), eq(customerAddress.id, addressId)))
-    .returning({ id: customerAddress.id });
+    .returning();
 
-  return deleted.length > 0;
+  return row === undefined ? undefined : toCustomerAddress(row);
+}
+
+export async function findOldestAddressId(tx: Db, customerId: string): Promise<string | undefined> {
+  const [row] = await tx
+    .select({ id: customerAddress.id })
+    .from(customerAddress)
+    .where(eq(customerAddress.customerId, customerId))
+    .orderBy(asc(customerAddress.createdAt), asc(customerAddress.id))
+    .limit(1);
+
+  return row?.id;
 }
 
 export async function setPreferredFlag(
