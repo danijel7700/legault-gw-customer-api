@@ -1,0 +1,739 @@
+{
+  "info": {
+    "_postman_id": "66be8ce4-06e9-4e2a-a588-1a5cc228b8e7",
+    "name": "Legault GW Customer API — Direct (dev)",
+    "description": "Direct, service-level contract for the customer API — what the **auth layer** sends, not what the mobile app sends.\n\nUse this collection when you are working on this service itself: it sets `x-brand` and `x-customer-id` by hand, so it bypasses the auth layer entirely. In every deployed environment the service must be reachable **only** through the auth layer; these headers are injected there and any client-supplied copy is stripped.\n\nThe mobile-facing contract lives in `postman/` one level up (`Legault Customer API — Mobile`).\n\nRouting\n- `/health` and `/health/ready` are unversioned and brand-agnostic (liveness / readiness probes).\n- Everything else is mounted under `/{version}` (currently only `v1`) and requires the `x-brand` header (`rens` or `mondou`).\n- Member endpoints additionally require `x-customer-id` and an `Authorization: Bearer <SLAS access token>` header.\n\nAddress ids in the path are the **local** uuid returned as `id` by the API (not the SFCC `addressId`). `Create Address` stores it in the `addressId` environment variable automatically.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "apiVersion",
+      "value": "v1",
+      "type": "string",
+      "description": "Fallback used when the environment does not define apiVersion."
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "description": "Probes and brand configuration echo.",
+      "item": [
+        {
+          "name": "Liveness",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Process liveness. No brand, version or auth required.\n\n200 → `{ \"status\": \"ok\", \"uptime\": 123 }`"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('status is ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/health",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["health"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "cookie": [],
+              "body": "{\n  \"status\": \"ok\",\n  \"uptime\": 1042\n}"
+            }
+          ]
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": ["{{baseUrl}}"],
+              "path": ["health", "ready"]
+            },
+            "description": "Checks the database connection.\n\n200 → `{ \"status\": \"ok\", \"database\": \"up\" }`\n503 → database unreachable."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('database is up', () => pm.expect(pm.response.json().database).to.eql('up'));"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/health/ready",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["health", "ready"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "cookie": [],
+              "body": "{\n  \"status\": \"ok\",\n  \"database\": \"up\"\n}"
+            },
+            {
+              "name": "503 Service Unavailable",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/health/ready",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["health", "ready"]
+                }
+              },
+              "status": "Service Unavailable",
+              "code": 503,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "cookie": [],
+              "body": "{\n  \"error\": {\n    \"code\": \"SERVICE_UNAVAILABLE\",\n    \"message\": \"Database is not reachable\",\n    \"requestId\": \"0f5f6f0a-6b7c-4a5f-9b0a-2f3f0d1e2a3b\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Brand Health",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-brand",
+                "value": "{{brand}}",
+                "description": "Required. rens | mondou"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/{{apiVersion}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["{{apiVersion}}", "health"]
+            },
+            "description": "Versioned, brand-scoped health. Echoes the resolved public SFCC configuration for the brand.\n\n400 `MISSING_BRAND` when `x-brand` is absent, 400 `UNKNOWN_BRAND` for an unsupported brand, 400 `UNSUPPORTED_API_VERSION` for a version other than `v1`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('brand matches request', () => {",
+                  "  pm.expect(pm.response.json().brand).to.eql(pm.environment.get('brand'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [{ "key": "x-brand", "value": "{{brand}}" }],
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/health",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "health"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "cookie": [],
+              "body": "{\n  \"status\": \"ok\",\n  \"version\": \"v1\",\n  \"brand\": \"rens\",\n  \"sfcc\": {\n    \"shortCode\": \"abcd1234\",\n    \"orgId\": \"f_ecom_abcd_001\",\n    \"siteId\": \"RensSite\"\n  },\n  \"timestamp\": \"2026-08-14T10:15:30.000Z\"\n}"
+            },
+            {
+              "name": "400 Missing brand",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/health",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "health"]
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "cookie": [],
+              "body": "{\n  \"error\": {\n    \"code\": \"MISSING_BRAND\",\n    \"message\": \"Missing x-brand header\",\n    \"requestId\": \"0f5f6f0a-6b7c-4a5f-9b0a-2f3f0d1e2a3b\"\n  }\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Member",
+      "description": "Customer profile and address book. Every request needs `x-brand`, `x-customer-id` and a Bearer access token.",
+      "item": [
+        {
+          "name": "Profile",
+          "item": [
+            {
+              "name": "Get Profile",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-brand",
+                    "value": "{{brand}}",
+                    "description": "Required. rens | mondou"
+                  },
+                  {
+                    "key": "x-customer-id",
+                    "value": "{{customerId}}",
+                    "description": "Required. SFCC customer id, max 128 chars, [A-Za-z0-9_.~-]"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "profile"]
+                },
+                "description": "Returns the stored profile, falling back to SFCC (and provisioning locally) on a first hit."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                      "",
+                      "const body = pm.response.json();",
+                      "",
+                      "pm.test('addresses is an array', () => pm.expect(body.addresses).to.be.an('array'));",
+                      "",
+                      "const preferred = (body.addresses || []).find((address) => address.preferred);",
+                      "",
+                      "if (preferred && preferred.id) {",
+                      "  pm.environment.set('addressId', preferred.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "200 OK",
+                  "originalRequest": {
+                    "method": "GET",
+                    "header": [
+                      { "key": "x-brand", "value": "{{brand}}" },
+                      { "key": "x-customer-id", "value": "{{customerId}}" }
+                    ],
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "profile"]
+                    }
+                  },
+                  "status": "OK",
+                  "code": 200,
+                  "_postman_previewlanguage": "json",
+                  "header": [{ "key": "Content-Type", "value": "application/json" }],
+                  "cookie": [],
+                  "body": "{\n  \"email\": \"jane.doe@example.com\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"phone\": \"5145550123\",\n  \"birthday\": \"1990-04-12\",\n  \"preferredLocale\": \"en-CA\",\n  \"postalCode\": \"H2X1Y4\",\n  \"preferredStore\": \"store-042\",\n  \"addresses\": [\n    {\n      \"id\": \"3f1a7c58-2f0d-4a2e-9d51-8b8a2c9f1e77\",\n      \"addressId\": \"home\",\n      \"address1\": \"123 Rue Sainte-Catherine\",\n      \"address2\": \"Apt 4\",\n      \"city\": \"Montreal\",\n      \"stateCode\": \"QC\",\n      \"postalCode\": \"H2X1Y4\",\n      \"countryCode\": \"CA\",\n      \"firstName\": \"Jane\",\n      \"lastName\": \"Doe\",\n      \"fullName\": \"Jane Doe\",\n      \"phone\": \"5145550123\",\n      \"preferred\": true\n    }\n  ]\n}"
+                },
+                {
+                  "name": "400 Missing identity headers",
+                  "originalRequest": {
+                    "method": "GET",
+                    "header": [{ "key": "x-brand", "value": "{{brand}}" }],
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "profile"]
+                    }
+                  },
+                  "status": "Bad Request",
+                  "code": 400,
+                  "_postman_previewlanguage": "json",
+                  "header": [{ "key": "Content-Type", "value": "application/json" }],
+                  "cookie": [],
+                  "body": "{\n  \"error\": {\n    \"code\": \"VALIDATION_ERROR\",\n    \"message\": \"Validation failed\",\n    \"requestId\": \"0f5f6f0a-6b7c-4a5f-9b0a-2f3f0d1e2a3b\",\n    \"details\": [\n      {\n        \"path\": \"x-customer-id\",\n        \"message\": \"x-customer-id header is required\"\n      }\n    ]\n  }\n}"
+                }
+              ]
+            },
+            {
+              "name": "Update Profile",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "x-brand",
+                    "value": "{{brand}}",
+                    "description": "Required. rens | mondou"
+                  },
+                  {
+                    "key": "x-customer-id",
+                    "value": "{{customerId}}",
+                    "description": "Required."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"phone\": \"5145550123\",\n  \"phoneType\": \"mobile\",\n  \"postalCode\": \"H2X1Y4\",\n  \"preferredStore\": \"store-042\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "profile"]
+                },
+                "description": "Partial update; unknown keys are rejected. At least one field must be supplied.\n\nField rules\n- `firstName` (≤40), `lastName` (≤80), `phone` (≤32), `postalCode` (≤16), `preferredStore` (≤64) — send `null` to clear, blank strings are rejected.\n- `phoneType` — `mobile` | `home`, only meaningful when `phone` is also sent."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "200 OK",
+                  "originalRequest": {
+                    "method": "PATCH",
+                    "header": [
+                      { "key": "x-brand", "value": "{{brand}}" },
+                      { "key": "x-customer-id", "value": "{{customerId}}" },
+                      { "key": "Content-Type", "value": "application/json" }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"firstName\": \"Jane\",\n  \"phone\": \"5145550123\",\n  \"phoneType\": \"mobile\"\n}",
+                      "options": { "raw": { "language": "json" } }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "profile"]
+                    }
+                  },
+                  "status": "OK",
+                  "code": 200,
+                  "_postman_previewlanguage": "json",
+                  "header": [{ "key": "Content-Type", "value": "application/json" }],
+                  "cookie": [],
+                  "body": "{\n  \"email\": \"jane.doe@example.com\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"phone\": \"5145550123\",\n  \"postalCode\": \"H2X1Y4\",\n  \"preferredStore\": \"store-042\",\n  \"addresses\": []\n}"
+                },
+                {
+                  "name": "400 Empty patch",
+                  "originalRequest": {
+                    "method": "PATCH",
+                    "header": [
+                      { "key": "x-brand", "value": "{{brand}}" },
+                      { "key": "x-customer-id", "value": "{{customerId}}" },
+                      { "key": "Content-Type", "value": "application/json" }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{}",
+                      "options": { "raw": { "language": "json" } }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "profile"]
+                    }
+                  },
+                  "status": "Bad Request",
+                  "code": 400,
+                  "_postman_previewlanguage": "json",
+                  "header": [{ "key": "Content-Type", "value": "application/json" }],
+                  "cookie": [],
+                  "body": "{\n  \"error\": {\n    \"code\": \"VALIDATION_ERROR\",\n    \"message\": \"Validation failed\",\n    \"requestId\": \"0f5f6f0a-6b7c-4a5f-9b0a-2f3f0d1e2a3b\",\n    \"details\": [\n      {\n        \"path\": \"\",\n        \"message\": \"At least one field must be supplied\"\n      }\n    ]\n  }\n}"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Addresses",
+          "item": [
+            {
+              "name": "Create Address",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-brand",
+                    "value": "{{brand}}",
+                    "description": "Required. rens | mondou"
+                  },
+                  {
+                    "key": "x-customer-id",
+                    "value": "{{customerId}}",
+                    "description": "Required."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"label\": \"Home\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"street1\": \"123 Rue Sainte-Catherine\",\n  \"street2\": \"Apt 4\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2X1Y4\",\n  \"countryCode\": \"CA\",\n  \"phone\": \"5145550123\",\n  \"phoneType\": \"mobile\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "addresses"]
+                },
+                "description": "Creates an address at SFCC and mirrors it locally. Returns 201 with the stored address.\n\nRequired: `label`, `firstName`, `lastName`, `street1`, `city`, `stateCode`, `postalCode`, `phone`.\nOptional: `street2` (nullable), `countryCode` (2-letter ISO, defaults to `CA`), `phoneType` (`mobile` | `home`).\nUnknown keys are rejected.\n\nThe returned `id` is saved to the `addressId` environment variable for the requests below."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                      "",
+                      "const address = pm.response.json();",
+                      "",
+                      "pm.test('returns a local id', () => pm.expect(address.id).to.be.a('string'));",
+                      "",
+                      "if (address.id) {",
+                      "  pm.environment.set('addressId', address.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "201 Created",
+                  "originalRequest": {
+                    "method": "POST",
+                    "header": [
+                      { "key": "x-brand", "value": "{{brand}}" },
+                      { "key": "x-customer-id", "value": "{{customerId}}" },
+                      { "key": "Content-Type", "value": "application/json" }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"label\": \"Home\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"street1\": \"123 Rue Sainte-Catherine\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2X1Y4\",\n  \"phone\": \"5145550123\"\n}",
+                      "options": { "raw": { "language": "json" } }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "addresses"]
+                    }
+                  },
+                  "status": "Created",
+                  "code": 201,
+                  "_postman_previewlanguage": "json",
+                  "header": [{ "key": "Content-Type", "value": "application/json" }],
+                  "cookie": [],
+                  "body": "{\n  \"id\": \"3f1a7c58-2f0d-4a2e-9d51-8b8a2c9f1e77\",\n  \"addressId\": \"Home\",\n  \"address1\": \"123 Rue Sainte-Catherine\",\n  \"address2\": \"Apt 4\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2X1Y4\",\n  \"countryCode\": \"CA\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"fullName\": \"Jane Doe\",\n  \"phone\": \"5145550123\",\n  \"preferred\": false\n}"
+                }
+              ]
+            },
+            {
+              "name": "Update Address",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "x-brand",
+                    "value": "{{brand}}",
+                    "description": "Required. rens | mondou"
+                  },
+                  {
+                    "key": "x-customer-id",
+                    "value": "{{customerId}}",
+                    "description": "Required."
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"street1\": \"456 Boulevard Saint-Laurent\",\n  \"street2\": null,\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2T1R3\",\n  \"phone\": \"5145550199\",\n  \"phoneType\": \"home\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}"],
+                  "variable": []
+                },
+                "description": "Partial update of a stored address. `{{addressId}}` must be the local uuid (`id`), not the SFCC `addressId`.\n\nAt least one field must be supplied; unknown keys are rejected. `street2` and `phoneType` accept `null`.\n\n404 when the address does not belong to the customer, 400 `VALIDATION_ERROR` when the path id is not a uuid."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "200 OK",
+                  "originalRequest": {
+                    "method": "PATCH",
+                    "header": [
+                      { "key": "x-brand", "value": "{{brand}}" },
+                      { "key": "x-customer-id", "value": "{{customerId}}" },
+                      { "key": "Content-Type", "value": "application/json" }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"street1\": \"456 Boulevard Saint-Laurent\"\n}",
+                      "options": { "raw": { "language": "json" } }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}"]
+                    }
+                  },
+                  "status": "OK",
+                  "code": 200,
+                  "_postman_previewlanguage": "json",
+                  "header": [{ "key": "Content-Type", "value": "application/json" }],
+                  "cookie": [],
+                  "body": "{\n  \"id\": \"3f1a7c58-2f0d-4a2e-9d51-8b8a2c9f1e77\",\n  \"addressId\": \"Home\",\n  \"address1\": \"456 Boulevard Saint-Laurent\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2T1R3\",\n  \"countryCode\": \"CA\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"fullName\": \"Jane Doe\",\n  \"phone\": \"5145550199\",\n  \"preferred\": false\n}"
+                },
+                {
+                  "name": "404 Address not found",
+                  "originalRequest": {
+                    "method": "PATCH",
+                    "header": [
+                      { "key": "x-brand", "value": "{{brand}}" },
+                      { "key": "x-customer-id", "value": "{{customerId}}" },
+                      { "key": "Content-Type", "value": "application/json" }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"city\": \"Laval\"\n}",
+                      "options": { "raw": { "language": "json" } }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}"]
+                    }
+                  },
+                  "status": "Not Found",
+                  "code": 404,
+                  "_postman_previewlanguage": "json",
+                  "header": [{ "key": "Content-Type", "value": "application/json" }],
+                  "cookie": [],
+                  "body": "{\n  \"error\": {\n    \"code\": \"NOT_FOUND\",\n    \"message\": \"Address not found\",\n    \"requestId\": \"0f5f6f0a-6b7c-4a5f-9b0a-2f3f0d1e2a3b\"\n  }\n}"
+                }
+              ]
+            },
+            {
+              "name": "Set Preferred Address",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "x-brand",
+                    "value": "{{brand}}",
+                    "description": "Required. rens | mondou"
+                  },
+                  {
+                    "key": "x-customer-id",
+                    "value": "{{customerId}}",
+                    "description": "Required."
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}/preferred",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}", "preferred"]
+                },
+                "description": "Marks the address as preferred at SFCC and locally. No request body."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                      "pm.test('address is preferred', () => pm.expect(pm.response.json().preferred).to.eql(true));"
+                    ]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "200 OK",
+                  "originalRequest": {
+                    "method": "PUT",
+                    "header": [
+                      { "key": "x-brand", "value": "{{brand}}" },
+                      { "key": "x-customer-id", "value": "{{customerId}}" }
+                    ],
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}/preferred",
+                      "host": ["{{baseUrl}}"],
+                      "path": [
+                        "{{apiVersion}}",
+                        "member",
+                        "addresses",
+                        "{{addressId}}",
+                        "preferred"
+                      ]
+                    }
+                  },
+                  "status": "OK",
+                  "code": 200,
+                  "_postman_previewlanguage": "json",
+                  "header": [{ "key": "Content-Type", "value": "application/json" }],
+                  "cookie": [],
+                  "body": "{\n  \"id\": \"3f1a7c58-2f0d-4a2e-9d51-8b8a2c9f1e77\",\n  \"addressId\": \"Home\",\n  \"address1\": \"123 Rue Sainte-Catherine\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2X1Y4\",\n  \"countryCode\": \"CA\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"fullName\": \"Jane Doe\",\n  \"phone\": \"5145550123\",\n  \"preferred\": true\n}"
+                }
+              ]
+            },
+            {
+              "name": "Delete Address",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "x-brand",
+                    "value": "{{brand}}",
+                    "description": "Required. rens | mondou"
+                  },
+                  {
+                    "key": "x-customer-id",
+                    "value": "{{customerId}}",
+                    "description": "Required."
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}"]
+                },
+                "description": "Deletes the address at SFCC and locally. Returns 204 with no body. If the deleted address was preferred, another address is promoted and mirrored back to SFCC."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('204 No Content', () => pm.response.to.have.status(204));",
+                      "",
+                      "pm.environment.unset('addressId');"
+                    ]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "204 No Content",
+                  "originalRequest": {
+                    "method": "DELETE",
+                    "header": [
+                      { "key": "x-brand", "value": "{{brand}}" },
+                      { "key": "x-customer-id", "value": "{{customerId}}" }
+                    ],
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}"]
+                    }
+                  },
+                  "status": "No Content",
+                  "code": 204,
+                  "_postman_previewlanguage": "text",
+                  "header": [],
+                  "cookie": [],
+                  "body": ""
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

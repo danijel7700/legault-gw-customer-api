@@ -1,0 +1,574 @@
+{
+  "info": {
+    "_postman_id": "33aeb9e5-efaa-4786-bdf5-4cb5909ede56",
+    "name": "Legault Customer API — Mobile",
+    "description": "The contract the **mobile app** codes against. Every request carries exactly one credential — `Authorization: Bearer <shopper access token>` — and nothing else.\n\nHow it fits together\n\n```\nmobile app ──Bearer token──▶ auth layer ──Bearer token────────▶ customer API ──▶ SFCC / DB\n                             (edge)      + x-brand            (private)\n                                         + x-customer-id\n```\n\nThe auth layer is the only public entry point. On every request it:\n\n1. **Verifies** the SLAS shopper token — signature against the SLAS JWKS, `exp`, and that it was issued to one of our SLAS clients. Reject with 401 otherwise; nothing reaches the customer API.\n2. **Strips** any inbound `x-customer-id` and `x-brand` — unconditionally, before routing. These are trusted headers; a client must never be able to set them.\n3. **Derives `x-customer-id`** from the token itself, never from the request body or a query param. SLAS returns `customer_id` alongside the token at login (keep it in the session), and the shopper JWT carries it in the `isb` claim (`rcid:` for a registered shopper, `gcid:` for a guest).\n4. **Derives `x-brand`** (`rens` | `mondou`) from the SLAS client the token was minted for — each brand app has its own SLAS client id, and the JWT's channel claim maps 1:1 to the brand's `siteId`. Per-brand hostnames work too; the app itself must not choose.\n5. **Forwards** the original `Authorization` header untouched — the customer API passes that shopper token straight through to SFCC, so it must survive the hop.\n6. Adds a hop credential (mTLS, or a shared `x-internal-key`) so the customer API can refuse anything that did not come from the edge.\n\nWhy step 2 is not optional: the customer API reads the profile out of its own database keyed on `x-customer-id` before it ever calls SFCC, so a caller who can set that header reads another shopper's profile without the token ever being checked against it. Header injection has to happen where the token is verified.\n\nPaths, bodies and error shapes below are identical to the service contract — the auth layer is a pass-through on everything except the headers above. Obtaining and refreshing the token is the auth layer's own contract and is not part of this collection; paste one into the `accessToken` variable to run these requests. The service-level collection lives in `postman/dev/`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "apiVersion",
+      "value": "v1",
+      "type": "string",
+      "description": "Fallback used when the environment does not define apiVersion."
+    }
+  ],
+  "item": [
+    {
+      "name": "Member",
+      "description": "Profile and address book of the shopper the token belongs to. No identity headers — the auth layer supplies them.",
+      "item": [
+        {
+          "name": "Profile",
+          "item": [
+            {
+              "name": "Get Profile",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "profile"]
+                },
+                "description": "Returns the profile of the token's owner, addresses included.\n\n401 when the token is missing, expired or invalid — refresh and retry once."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                      "",
+                      "const body = pm.response.json();",
+                      "",
+                      "pm.test('addresses is an array', () => pm.expect(body.addresses).to.be.an('array'));",
+                      "",
+                      "const preferred = (body.addresses || []).find((address) => address.preferred);",
+                      "",
+                      "if (preferred && preferred.id) {",
+                      "  pm.environment.set('addressId', preferred.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "200 OK",
+                  "originalRequest": {
+                    "method": "GET",
+                    "header": [],
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "profile"]
+                    }
+                  },
+                  "status": "OK",
+                  "code": 200,
+                  "_postman_previewlanguage": "json",
+                  "header": [
+                    {
+                      "key": "Content-Type",
+                      "value": "application/json"
+                    }
+                  ],
+                  "cookie": [],
+                  "body": "{\n  \"email\": \"jane.doe@example.com\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"phone\": \"5145550123\",\n  \"birthday\": \"1990-04-12\",\n  \"preferredLocale\": \"en-CA\",\n  \"postalCode\": \"H2X1Y4\",\n  \"preferredStore\": \"store-042\",\n  \"addresses\": [\n    {\n      \"id\": \"3f1a7c58-2f0d-4a2e-9d51-8b8a2c9f1e77\",\n      \"addressId\": \"home\",\n      \"address1\": \"123 Rue Sainte-Catherine\",\n      \"address2\": \"Apt 4\",\n      \"city\": \"Montreal\",\n      \"stateCode\": \"QC\",\n      \"postalCode\": \"H2X1Y4\",\n      \"countryCode\": \"CA\",\n      \"firstName\": \"Jane\",\n      \"lastName\": \"Doe\",\n      \"fullName\": \"Jane Doe\",\n      \"phone\": \"5145550123\",\n      \"preferred\": true\n    }\n  ]\n}"
+                },
+                {
+                  "name": "401 Unauthorized",
+                  "originalRequest": {
+                    "method": "GET",
+                    "header": [],
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "profile"]
+                    }
+                  },
+                  "status": "Unauthorized",
+                  "code": 401,
+                  "_postman_previewlanguage": "json",
+                  "header": [
+                    {
+                      "key": "Content-Type",
+                      "value": "application/json"
+                    }
+                  ],
+                  "cookie": [],
+                  "body": "{\n  \"error\": {\n    \"code\": \"UNAUTHORIZED\",\n    \"message\": \"The shopper access token is expired or invalid\",\n    \"requestId\": \"0f5f6f0a-6b7c-4a5f-9b0a-2f3f0d1e2a3b\"\n  }\n}"
+                }
+              ]
+            },
+            {
+              "name": "Update Profile",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"phone\": \"5145550123\",\n  \"phoneType\": \"mobile\",\n  \"postalCode\": \"H2X1Y4\",\n  \"preferredStore\": \"store-042\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "profile"]
+                },
+                "description": "Partial update. Send only the fields that changed; at least one is required and unknown keys are rejected.\n\n- `firstName` (≤40), `lastName` (≤80), `phone` (≤32), `postalCode` (≤16), `preferredStore` (≤64) — send `null` to clear a field, blank strings are rejected.\n- `phoneType` — `mobile` | `home`, only accepted alongside `phone`.\n\nEmail and birthday are not editable here."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "200 OK",
+                  "originalRequest": {
+                    "method": "PATCH",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"firstName\": \"Jane\",\n  \"phone\": \"5145550123\",\n  \"phoneType\": \"mobile\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "profile"]
+                    }
+                  },
+                  "status": "OK",
+                  "code": 200,
+                  "_postman_previewlanguage": "json",
+                  "header": [
+                    {
+                      "key": "Content-Type",
+                      "value": "application/json"
+                    }
+                  ],
+                  "cookie": [],
+                  "body": "{\n  \"email\": \"jane.doe@example.com\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"phone\": \"5145550123\",\n  \"postalCode\": \"H2X1Y4\",\n  \"preferredStore\": \"store-042\",\n  \"addresses\": []\n}"
+                },
+                {
+                  "name": "400 Empty patch",
+                  "originalRequest": {
+                    "method": "PATCH",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/profile",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "profile"]
+                    }
+                  },
+                  "status": "Bad Request",
+                  "code": 400,
+                  "_postman_previewlanguage": "json",
+                  "header": [
+                    {
+                      "key": "Content-Type",
+                      "value": "application/json"
+                    }
+                  ],
+                  "cookie": [],
+                  "body": "{\n  \"error\": {\n    \"code\": \"VALIDATION_ERROR\",\n    \"message\": \"Validation failed\",\n    \"requestId\": \"0f5f6f0a-6b7c-4a5f-9b0a-2f3f0d1e2a3b\",\n    \"details\": [\n      {\n        \"path\": \"\",\n        \"message\": \"At least one field must be supplied\"\n      }\n    ]\n  }\n}"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Addresses",
+          "item": [
+            {
+              "name": "Create Address",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"label\": \"Home\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"street1\": \"123 Rue Sainte-Catherine\",\n  \"street2\": \"Apt 4\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2X1Y4\",\n  \"countryCode\": \"CA\",\n  \"phone\": \"5145550123\",\n  \"phoneType\": \"mobile\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "addresses"]
+                },
+                "description": "Adds an address to the shopper's address book. 201 with the created address.\n\nRequired: `label`, `firstName`, `lastName`, `street1`, `city`, `stateCode`, `postalCode`, `phone`.\nOptional: `street2` (nullable), `countryCode` (2-letter ISO, defaults to `CA`), `phoneType` (`mobile` | `home`).\nUnknown keys are rejected.\n\nThe `id` in the response is the handle to use in every other address call — keep it, and store it client-side alongside the address. Postman saves it to `addressId`."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                      "",
+                      "const address = pm.response.json();",
+                      "",
+                      "pm.test('returns an address id', () => pm.expect(address.id).to.be.a('string'));",
+                      "",
+                      "if (address.id) {",
+                      "  pm.environment.set('addressId', address.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "201 Created",
+                  "originalRequest": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"label\": \"Home\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"street1\": \"123 Rue Sainte-Catherine\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2X1Y4\",\n  \"phone\": \"5145550123\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "addresses"]
+                    }
+                  },
+                  "status": "Created",
+                  "code": 201,
+                  "_postman_previewlanguage": "json",
+                  "header": [
+                    {
+                      "key": "Content-Type",
+                      "value": "application/json"
+                    }
+                  ],
+                  "cookie": [],
+                  "body": "{\n  \"id\": \"3f1a7c58-2f0d-4a2e-9d51-8b8a2c9f1e77\",\n  \"addressId\": \"Home\",\n  \"address1\": \"123 Rue Sainte-Catherine\",\n  \"address2\": \"Apt 4\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2X1Y4\",\n  \"countryCode\": \"CA\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"fullName\": \"Jane Doe\",\n  \"phone\": \"5145550123\",\n  \"preferred\": false\n}"
+                },
+                {
+                  "name": "409 Label already used",
+                  "originalRequest": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"label\": \"Home\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"street1\": \"123 Rue Sainte-Catherine\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2X1Y4\",\n  \"phone\": \"5145550123\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "addresses"]
+                    }
+                  },
+                  "status": "Conflict",
+                  "code": 409,
+                  "_postman_previewlanguage": "json",
+                  "header": [
+                    {
+                      "key": "Content-Type",
+                      "value": "application/json"
+                    }
+                  ],
+                  "cookie": [],
+                  "body": "{\n  \"error\": {\n    \"code\": \"CONFLICT\",\n    \"message\": \"An address with that name already exists\",\n    \"requestId\": \"0f5f6f0a-6b7c-4a5f-9b0a-2f3f0d1e2a3b\"\n  }\n}"
+                }
+              ]
+            },
+            {
+              "name": "Update Address",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"street1\": \"456 Boulevard Saint-Laurent\",\n  \"street2\": null,\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2T1R3\",\n  \"phone\": \"5145550199\",\n  \"phoneType\": \"home\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}"]
+                },
+                "description": "Partial update of one address. The path id is the `id` returned by Create Address / Get Profile.\n\nAt least one field must be supplied; unknown keys are rejected. `street2` and `phoneType` accept `null` to clear.\n\n404 when the address is not in this shopper's book."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "200 OK",
+                  "originalRequest": {
+                    "method": "PATCH",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"street1\": \"456 Boulevard Saint-Laurent\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}"]
+                    }
+                  },
+                  "status": "OK",
+                  "code": 200,
+                  "_postman_previewlanguage": "json",
+                  "header": [
+                    {
+                      "key": "Content-Type",
+                      "value": "application/json"
+                    }
+                  ],
+                  "cookie": [],
+                  "body": "{\n  \"id\": \"3f1a7c58-2f0d-4a2e-9d51-8b8a2c9f1e77\",\n  \"addressId\": \"Home\",\n  \"address1\": \"456 Boulevard Saint-Laurent\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2T1R3\",\n  \"countryCode\": \"CA\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"fullName\": \"Jane Doe\",\n  \"phone\": \"5145550199\",\n  \"preferred\": false\n}"
+                },
+                {
+                  "name": "404 Address not found",
+                  "originalRequest": {
+                    "method": "PATCH",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"city\": \"Laval\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}"]
+                    }
+                  },
+                  "status": "Not Found",
+                  "code": 404,
+                  "_postman_previewlanguage": "json",
+                  "header": [
+                    {
+                      "key": "Content-Type",
+                      "value": "application/json"
+                    }
+                  ],
+                  "cookie": [],
+                  "body": "{\n  \"error\": {\n    \"code\": \"NOT_FOUND\",\n    \"message\": \"Address not found\",\n    \"requestId\": \"0f5f6f0a-6b7c-4a5f-9b0a-2f3f0d1e2a3b\"\n  }\n}"
+                }
+              ]
+            },
+            {
+              "name": "Set Preferred Address",
+              "request": {
+                "method": "PUT",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}/preferred",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}", "preferred"]
+                },
+                "description": "Makes this the shopper's default address. No request body. The previously preferred address stops being preferred."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                      "pm.test('address is preferred', () => pm.expect(pm.response.json().preferred).to.eql(true));"
+                    ]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "200 OK",
+                  "originalRequest": {
+                    "method": "PUT",
+                    "header": [],
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}/preferred",
+                      "host": ["{{baseUrl}}"],
+                      "path": [
+                        "{{apiVersion}}",
+                        "member",
+                        "addresses",
+                        "{{addressId}}",
+                        "preferred"
+                      ]
+                    }
+                  },
+                  "status": "OK",
+                  "code": 200,
+                  "_postman_previewlanguage": "json",
+                  "header": [
+                    {
+                      "key": "Content-Type",
+                      "value": "application/json"
+                    }
+                  ],
+                  "cookie": [],
+                  "body": "{\n  \"id\": \"3f1a7c58-2f0d-4a2e-9d51-8b8a2c9f1e77\",\n  \"addressId\": \"Home\",\n  \"address1\": \"123 Rue Sainte-Catherine\",\n  \"city\": \"Montreal\",\n  \"stateCode\": \"QC\",\n  \"postalCode\": \"H2X1Y4\",\n  \"countryCode\": \"CA\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"fullName\": \"Jane Doe\",\n  \"phone\": \"5145550123\",\n  \"preferred\": true\n}"
+                }
+              ]
+            },
+            {
+              "name": "Delete Address",
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}"]
+                },
+                "description": "Removes the address. 204, no body. If it was the preferred one, another address is promoted in its place."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('204 No Content', () => pm.response.to.have.status(204));",
+                      "",
+                      "pm.environment.unset('addressId');"
+                    ]
+                  }
+                }
+              ],
+              "response": [
+                {
+                  "name": "204 No Content",
+                  "originalRequest": {
+                    "method": "DELETE",
+                    "header": [],
+                    "url": {
+                      "raw": "{{baseUrl}}/{{apiVersion}}/member/addresses/{{addressId}}",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["{{apiVersion}}", "member", "addresses", "{{addressId}}"]
+                    }
+                  },
+                  "status": "No Content",
+                  "code": 204,
+                  "_postman_previewlanguage": "text",
+                  "header": [],
+                  "cookie": [],
+                  "body": ""
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
