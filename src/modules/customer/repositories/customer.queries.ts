@@ -181,9 +181,7 @@ export function buildUpsertProfileSet(profile: CreateProfileInput): CustomerUpda
   if (profile.firstName != null) {
     set.firstName = profile.firstName;
   }
-  // Conditional like every other field now that the column is nullable. It used
-  // to be written unconditionally, which meant a source with no lastName would
-  // clobber a good stored value with a placeholder.
+
   if (profile.lastName != null) {
     set.lastName = profile.lastName;
   }

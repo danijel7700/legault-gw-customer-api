@@ -64,7 +64,6 @@ export function createCustomerRepository(db: Db): CustomerRepository {
     },
 
     async findByEmail(brand: Brand, email: string): Promise<Customer | null> {
-      // Normalizing first is what stops a placeholder address matching anything.
       const customerId = await findCustomerIdByEmail(db, brand, email);
 
       return customerId === undefined ? null : findAggregate(db, customerId);

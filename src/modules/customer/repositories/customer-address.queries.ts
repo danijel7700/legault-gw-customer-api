@@ -149,7 +149,6 @@ export async function clearPreferredAddress(
   await tx.update(customerAddress).set({ isPreferred: false, updatedAt: new Date() }).where(where);
 }
 
-/** Returns whether a row was actually removed. */
 export async function deleteAddressRow(
   tx: Db,
   customerId: string,
