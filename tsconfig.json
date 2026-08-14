@@ -5,7 +5,11 @@
     "lib": ["es2023"],
     "types": ["node"],
 
-    "rootDir": "./src",
+    // This project never emits — it is what the editor, eslint and `typecheck`
+    // use, and it covers every .ts file in the repo so the language server can
+    // resolve all of them from one program. Emit lives in tsconfig.build.json,
+    // which is the only place rootDir is set.
+    "noEmit": true,
     "outDir": "./dist",
     "sourceMap": true,
 
@@ -28,6 +32,6 @@
     "incremental": true,
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "drizzle.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

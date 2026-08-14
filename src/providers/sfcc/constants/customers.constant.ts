@@ -8,3 +8,13 @@ export const INVALID_CUSTOMER_ID_SLUGS: ReadonlySet<string> = new Set([
   'invalid-customer-id',
   'invalid-request-parameter',
 ]);
+
+export const CONCURRENT_MODIFICATION_SLUGS: ReadonlySet<string> = new Set([
+  'concurrent-modification',
+  'customer-concurrent-modification',
+]);
+
+export const ADDRESS_ALREADY_EXISTS_SLUGS: ReadonlySet<string> = new Set([
+  'address-already-exists',
+  'customer-address-already-exists',
+]);

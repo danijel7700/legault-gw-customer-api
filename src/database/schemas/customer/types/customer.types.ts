@@ -6,7 +6,7 @@ import type { ExternalId } from './external-id.types.js';
 export interface CustomerProfile {
   readonly email: string | null;
   readonly firstName: string | null;
-  readonly lastName: string;
+  readonly lastName: string | null;
   readonly salutation: string | null;
   readonly gender: Gender | null;
   readonly birthDate: string | null;

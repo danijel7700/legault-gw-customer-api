@@ -1,0 +1,12 @@
+{
+  // The only project that emits. Narrower than tsconfig.json on purpose: tests,
+  // the test harness and drizzle.config.ts must not reach dist/.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo.build"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/test-support/**"]
+}

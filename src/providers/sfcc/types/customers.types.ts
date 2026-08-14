@@ -11,6 +11,8 @@ export interface CustomerAddressResponse {
   readonly fullName?: string;
   readonly phone?: string;
   readonly preferred?: boolean;
+
+  readonly c_phoneType?: string;
 }
 
 export interface PaymentCardResponse {
@@ -44,4 +46,47 @@ export interface GetCustomerResponse {
   readonly preferredLocale?: string;
   readonly addresses?: readonly CustomerAddressResponse[];
   readonly paymentInstruments?: readonly PaymentInstrumentResponse[];
+
+  readonly c_postalCode?: string;
+  readonly c_preferredStore?: string;
+  readonly c_sscid?: string;
+  readonly c_ssccid?: string;
+}
+
+export interface UpdateCustomerRequest {
+  readonly firstName?: string | null;
+  readonly lastName?: string | null;
+  readonly phoneHome?: string | null;
+  readonly phoneMobile?: string | null;
+  readonly c_postalCode?: string | null;
+  readonly c_preferredStore?: string | null;
+}
+
+export interface CreateAddressRequest {
+  readonly addressId: string;
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly address1: string;
+  readonly address2?: string | null;
+  readonly city: string;
+  readonly stateCode: string;
+  readonly postalCode: string;
+  readonly countryCode: string;
+  readonly phone: string;
+  readonly c_phoneType?: string;
+}
+
+export interface UpdateAddressRequest {
+  readonly addressId: string;
+  readonly countryCode: string;
+  readonly lastName: string;
+  readonly firstName?: string;
+  readonly address1?: string;
+  readonly address2?: string | null;
+  readonly city?: string;
+  readonly stateCode?: string;
+  readonly postalCode?: string;
+  readonly phone?: string;
+  readonly c_phoneType?: string | null;
+  readonly preferred?: boolean;
 }

@@ -38,6 +38,18 @@ export class ConflictError extends HttpError {
   }
 }
 
+export class UnprocessableEntityError extends HttpError {
+  constructor(message = 'Unprocessable entity', options: HttpErrorOptions = {}) {
+    super(422, message, { code: ErrorCode.UNPROCESSABLE_ENTITY, ...options });
+  }
+}
+
+export class PreconditionFailedError extends HttpError {
+  constructor(message = 'Precondition failed', options: HttpErrorOptions = {}) {
+    super(412, message, { code: ErrorCode.PRECONDITION_FAILED, ...options });
+  }
+}
+
 export class PayloadTooLargeError extends HttpError {
   constructor(message = 'Payload too large', options: HttpErrorOptions = {}) {
     super(413, message, { code: ErrorCode.PAYLOAD_TOO_LARGE, ...options });

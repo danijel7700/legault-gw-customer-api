@@ -7,7 +7,9 @@ export {
   ForbiddenError,
   NotFoundError,
   PayloadTooLargeError,
+  PreconditionFailedError,
   UnauthorizedError,
+  UnprocessableEntityError,
   ValidationError,
 } from './client-errors.js';
 export { InternalServerError, ServiceUnavailableError, UpstreamError } from './server-errors.js';
