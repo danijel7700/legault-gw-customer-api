@@ -1,6 +1,12 @@
 export { customerRouter } from './routes/customer.routes.js';
 export { CUSTOMER_ID_HEADER } from './validations/customer.validation.js';
-export type { CustomerIdentity, CustomerProfile } from './types/customer.types.js';
+export { PHONE_TYPES } from './types/customer.types.js';
+export type {
+  CustomerIdentity,
+  CustomerProfile,
+  PhoneType,
+  UpdateMemberProfileRequest,
+} from './types/customer.types.js';
 
 export { createCustomerRepository } from './repositories/customer.repository.js';
 export {

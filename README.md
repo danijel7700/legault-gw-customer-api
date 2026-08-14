@@ -47,12 +47,13 @@ The `db:*` scripts need a reachable PostgreSQL and the `DB_*` block set — see
 
 ## The API surface
 
-| Endpoint                 | Purpose                                                                   |
-| ------------------------ | ------------------------------------------------------------------------- |
-| `GET /health`            | Liveness, for the load balancer. No brand, no version.                    |
-| `GET /health/ready`      | Readiness — can it reach PostgreSQL. No brand, no version.                |
-| `GET /v1/health`         | Which SFCC org this brand is pointed at. Needs `x-brand`.                 |
-| `GET /v1/member/profile` | The shopper's profile. Needs `x-brand`, `x-customer-id`, `Authorization`. |
+| Endpoint                   | Purpose                                                                   |
+| -------------------------- | ------------------------------------------------------------------------- |
+| `GET /health`              | Liveness, for the load balancer. No brand, no version.                    |
+| `GET /health/ready`        | Readiness — can it reach PostgreSQL. No brand, no version.                |
+| `GET /v1/health`           | Which SFCC org this brand is pointed at. Needs `x-brand`.                 |
+| `GET /v1/member/profile`   | The shopper's profile. Needs `x-brand`, `x-customer-id`, `Authorization`. |
+| `PATCH /v1/member/profile` | Updates it. Same headers, plus a JSON body.                               |
 
 ```bash
 curl -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
@@ -68,6 +69,8 @@ curl -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
   "phone": "514-555-5555",
   "birthday": "1815-12-10",
   "preferredLocale": "en",
+  "postalCode": "A1B2C3",
+  "preferredStore": "liberty-village",
   "addresses": [
     {
       "addressId": "Home",
@@ -94,20 +97,62 @@ curl -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
   A field that appeared only on a cache miss would be worse than no field at all.
 - **`preferredLocale` carries a bare language** (`en` / `fr`), not the SFCC locale (`en-CA`). The
   column is `$type<Language>()`; the locale is normalized on the way in and the original is not kept.
-- **`postalCode` is stored uppercase without spaces** (`A1B2C3`), by `normalizePostalCode`.
+- **`postalCode` is stored uppercase without spaces** (`A1B2C3`), by `normalizePostalCode`. This
+  applies to both the account-level `postalCode` and the per-address one. SFCC is left holding
+  whatever the caller sent (`A1B 2C3`) — a write does not impose this store's format on a system
+  other consumers read, so the two disagree on spacing by design.
 
 Absent fields are omitted rather than sent as `null`; `addresses` is `[]` rather than missing when the
 customer has none. In practice `birthday` and `preferredLocale` are unset on the dev orgs, so treat
 those two as untested rather than reliable.
 
+### Updating the profile
+
+```bash
+curl -X PATCH -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
+  -H "Authorization: Bearer $SHOPPER_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"phone":"514-555-0000","phoneType":"home","preferredStore":"liberty-village"}' \
+  http://localhost:3000/v1/member/profile
+```
+
+Answers `200` with the same body shape `GET` returns — the updated profile, no success envelope.
+
+Every field is optional and follows one rule: **absent leaves the value alone, `null` clears it, a
+value sets it.** `lastName` is no exception; the column dropped its `NOT NULL` in migration `0001`.
+An empty patch is a `400`, as is a key the schema does not know — on a write, silently stripping a
+misspelled field would answer `200` having changed nothing.
+
+| Field            | Type                 | Notes                                                      |
+| ---------------- | -------------------- | ---------------------------------------------------------- |
+| `firstName`      | `string \| null`     | Trimmed, 1-40 chars. `''` and `'   '` are rejected.        |
+| `lastName`       | `string \| null`     | Trimmed, 1-80 chars.                                       |
+| `phone`          | `string \| null`     | See below.                                                 |
+| `phoneType`      | `'mobile' \| 'home'` | Only meaningful beside a `phone`; alone it is a `400`.     |
+| `postalCode`     | `string \| null`     | Sent to SFCC verbatim, normalized on the way to the store. |
+| `preferredStore` | `string \| null`     | Free string — Rens uses slugs, Mondou store numbers.       |
+
+**`phone` is a switch, not two fields.** The contract exposes one number where SFCC and the store
+both keep two columns, so writing one clears the other: `phoneType: 'home'` sets `phoneHome` and
+clears `phoneMobile`, and vice versa. Without that, the response mapper's `phoneMobile ?? phoneHome`
+would keep handing back the number nobody just wrote. An absent `phoneType` means `mobile`, which is
+the column that mapper prefers anyway. `phone: null` clears both, and a `phoneType` alongside it is
+accepted and ignored — clearing has no direction.
+
+Blank strings are rejected rather than stored: `null` is how a field is cleared, and `'   '` is
+almost always a client bug. Note this is enforced by the write schema only — nothing normalizes
+whitespace at the repository boundary, so a name arriving through SFCC provisioning is still stored
+as sent.
+
 ### The inbound header contract
 
-| Header          | Required | Meaning                                                                  |
-| --------------- | -------- | ------------------------------------------------------------------------ |
-| `x-brand`       | yes      | `rens` or `mondou`. Selects the SFCC instance.                           |
-| `x-customer-id` | yes      | Opaque SFCC customer id, resolved by the gateway from the shopper token. |
-| `Authorization` | yes      | `Bearer <shopper SLAS access token>`. Forwarded verbatim to SCAPI.       |
-| `x-request-id`  | no       | Adopted if it matches `/^[\w.:-]{1,128}$/`, else one is minted. Echoed.  |
+| Header          | Required | Meaning                                                                                          |
+| --------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `x-brand`       | yes      | `rens` or `mondou`. Selects the SFCC instance.                                                   |
+| `x-customer-id` | yes      | Opaque SFCC customer id, resolved by the gateway from the shopper token.                         |
+| `Authorization` | yes      | `Bearer <shopper SLAS access token>`. Forwarded verbatim to SCAPI.                               |
+| `Content-Type`  | on write | `application/json`. Without it Express 5 leaves `req.body` undefined and the schema answers 400. |
+| `x-request-id`  | no       | Adopted if it matches `/^[\w.:-]{1,128}$/`, else one is minted. Echoed.                          |
 
 All three required headers are the gateway's to inject, which is why they are validated at the edge
 like any other untrusted input rather than trusted because they came from inside: a request that
@@ -120,6 +165,10 @@ both are 400s. That is also why a missing or malformed `Authorization` header is
 by one zod schema over `req.headers` — the id non-empty, ≤ 128 chars, `[\w.~-]` only; the token
 matched against `/^Bearer\s+\S+$/i`, ≤ 4096 chars, with the scheme stripped — and both reach the
 controller as a single `CustomerIdentity`, so each header name exists in exactly one file.
+
+A route that also has a body chains a second `validate(schema, 'body')`. The middleware writes each
+source under its own key on `req.validated` rather than replacing what the previous call put there,
+so `PATCH /profile` reads both back through `getValidated`.
 
 **This service never verifies the token.** It has no JWKS fetch and no signature check, because SCAPI
 verifies it on every call: a forged, expired or wrong-tenant token fails closed upstream. The same
@@ -406,12 +455,13 @@ src/
       index.ts                      THE ENTRY POINT — getSfccProvider + SfccProvider
       sfcc.provider.ts              domain operations, composed from the clients;
                                     memoised per brand
-      mappers/customer.mapper.ts    SCAPI shape -> CustomerProfile; drops the rest
+      mappers/customer.mapper.ts    SCAPI shape <-> contract shape; drops the rest
       http/sfcc-http.ts             axios factory + upstream error normalisation
       clients/
         slas.client.ts              guest token: client_credentials, cached, single-flight
                                     (currently unreferenced — see below)
-        customers.client.ts         Shopper Customers: getCustomer + error mapping
+        customers.client.ts         Shopper Customers: getCustomer, updateCustomer,
+                                    shared error mapping + the one-shot 409 retry
       constants/                    slas, customers, sfcc-http
       types/                        slas, customers, sfcc-http
       errors/                       sfcc-request (502), customer (mapped 4xx)
@@ -438,11 +488,16 @@ src/
 
   modules/
     customer/
-      controllers/customer.controller.ts   thin: validated headers -> service -> response
-      services/customer.service.ts         resolves the provider and delegates
-      validations/customer.validation.ts   zod schema over request headers
+      controllers/customer.controller.ts   thin: validated input -> service -> response
+      services/customer.service.ts         read-through and write-through
+      validations/customer.validation.ts   zod: identity headers + the update body
       types/customer.types.ts              THE CONTRACT: CustomerProfile, no SFCC
-      routes/customer.routes.ts            GET /profile
+      mappers/
+        customer.mapper.ts                 rows -> domain types
+        customer-profile.mapper.ts         stored aggregate -> CustomerProfile
+        sfcc-customer.mapper.ts            SFCC record -> upsert input / degraded response
+        customer-update.mapper.ts          update request -> patch + SFCC update
+      routes/customer.routes.ts            GET /profile, PATCH /profile
       index.ts                             module barrel — router + contract types
     health/
       controllers/ types/ routes/ index.ts
@@ -480,18 +535,35 @@ interface CustomerProfile {
   phone?: string; // phoneMobile ?? phoneHome, re-collapsed for the response
   birthday?: string;
   preferredLocale?: string; // a bare language: 'en' | 'fr'
+  postalCode?: string; // account-level, from c_postalCode
+  preferredStore?: string; // from c_preferredStore
   addresses?: CustomerAddress[];
+}
+
+interface UpdateMemberProfileRequest {
+  firstName?: string | null; // absent leaves alone, null clears, value sets
+  lastName?: string | null;
+  phone?: string | null;
+  phoneType?: 'mobile' | 'home'; // which column; setting one clears the other
+  postalCode?: string | null;
+  preferredStore?: string | null;
 }
 ```
 
-That file declares **two** contracts, and the distinction matters:
+That file declares **four** contracts, and the distinctions matter:
 
-- **`CustomerProfile`** — what the endpoint returns, built from our own stored aggregate.
+- **`CustomerProfile`** — what both endpoints return, built from our own stored aggregate.
+- **`UpdateMemberProfileRequest`** — what `PATCH` accepts. Deliberately a subset of the profile:
+  `email` and `birthday` are identity, not preferences, and changing them is not this endpoint's job.
 - **`SfccCustomerRecord`** — what the SFCC provider reports, and what provisioning writes from. It
   keeps the identifiers the response omits (`customerId`, `customerNo`, `login`), the phones SFCC
-  records separately, and the three `c_*` attributes Core stores, renamed to `preferredStore`,
-  `sfscAccountId`, `sfscPersonContactId` and address `phoneType` so no SFCC-instance naming survives
-  the boundary.
+  records separately, and the four `c_*` attributes Core stores, renamed to `postalCode`,
+  `preferredStore`, `sfscAccountId`, `sfscPersonContactId` and address `phoneType` so no
+  SFCC-instance naming survives the boundary.
+- **`SfccCustomerUpdate`** — the write-direction mirror of the record: the patch the provider applies
+  upstream, with the single `phone` already expanded into the two columns SFCC keeps apart. Declared
+  here with the consumer for the same reason the record is — the provider does not get to define the
+  shapes it is handed.
 
 The provider returns the record; shaping it into a response is this module's business, not the
 provider's. That split is what lets the response be served from the database while the record stays
@@ -502,6 +574,13 @@ and `phone_mobile` in separate columns. The Customer object carries `phoneMobile
 `phoneBusiness` separately and a profile may fill in any of them; the mondou dev customers use
 `phoneMobile` and leave `phoneHome` empty, which is how reading a single field turned into a phone
 that silently vanished. First one set wins, mobile first.
+
+The write direction is the same collapse run backwards, and it is why `PATCH` clears the column it
+did not write. If `phoneType: 'home'` only set `phone_home`, the `phoneMobile ?? phoneHome` above
+would keep returning the old mobile — the caller would move their number and read back the one they
+replaced, forever, because a cache hit never refreshes. That expansion lives in
+`mappers/customer-update.mapper.ts`, next to the collapse it inverts, and not in the provider: the
+provider has no way to see why one number becomes two.
 
 `CustomerAddress` is declared alongside. Its mapper exists for the same reason as the top-level one:
 SFCC types `addressId` as optional, but it is how a caller addresses a single entry, so the contract
@@ -527,11 +606,13 @@ What SFCC also returns and this API **does not**:
   duplicates.
 - **`gender`, `salutation`, `title`, `jobTitle`, `companyName`, `note`** — unused or sensitive;
   `note` is an internal CSR field that can contain free text about the customer.
-- **`c_*` custom attributes** — unbounded and instance-specific; forwarding them would make the
-  public contract a function of SFCC configuration. A live mondou profile carries eight of them
-  (`c_mPOSID`, `c_preferredStore`, `c_sscid`, `c_ssccid`, `c_sscSyncStatus`, `c_sscSyncResponseText`,
-  `c_CCRateLimiterCount`, `c_CCRateLimiterTimestamp`) — sync bookkeeping and rate-limiter state, none
-  of it a shopper's business.
+- **Most `c_*` custom attributes** — unbounded and instance-specific; forwarding them wholesale would
+  make the public contract a function of SFCC configuration. A live mondou profile carries nine
+  (`c_mPOSID`, `c_postalCode`, `c_preferredStore`, `c_sscid`, `c_ssccid`, `c_sscSyncStatus`,
+  `c_sscSyncResponseText`, `c_CCRateLimiterCount`, `c_CCRateLimiterTimestamp`). Four are mapped and
+  **renamed** on the way through — `c_postalCode`, `c_preferredStore` and the two SFSC ids — so the
+  contract names none of them. The rest are sync bookkeeping and rate-limiter state, none of it a
+  shopper's business.
 
 The omission is enforced twice: `GetCustomerResponse` in `providers/sfcc/types/customers.types.ts`
 never declares those fields, and `toCustomerProfile` builds its result field by field — including the
@@ -573,19 +654,22 @@ first-time requests racing, via a savepoint and a single re-resolve.
 
 A Ren's customer therefore usually gets two, a Mondou customer four. Absent ids are not written.
 
-**What has no SFCC source and stays null:** `gender`, `salutation` and the account-level
-`postal_code` — all three are SFSC-sourced, and no amount of widening the provider produces them.
-`birth_date` and `language` come from `birthday` / `preferredLocale`, which the README notes are unset
-on the dev orgs.
+**What has no SFCC source and stays null:** `gender` and `salutation` — both SFSC-sourced, and no
+amount of widening the provider produces them. The account-level `postal_code` used to be on this
+list; it now comes from `c_postalCode`. `birth_date` and `language` come from `birthday` /
+`preferredLocale`, which the README notes are unset on the dev orgs.
 
-**A hit never refreshes.** A profile edited in SFCC after provisioning will not be reflected. That is
-deliberate for now — a TTL or an explicit refresh endpoint is a separate decision, not a side effect
-of reading.
+**A read never refreshes on a hit.** A profile edited in SFCC after provisioning will not be
+reflected by `GET`. That is deliberate for now — a TTL or an explicit refresh endpoint is a separate
+decision, not a side effect of reading. `PATCH` is the one thing that updates a stored row: it
+refreshes the fields it was given, and on the provisioning branch it writes the whole record.
 
 **A missing `lastName` is stored as NULL, not rejected.** `customer.last_name` is nullable
 (migration `0001`) because SCAPI types it optional, and a customer we cannot name is still a customer
-we have to be able to store. A blank or whitespace-only value normalizes to NULL too, so "SFCC sent
-nothing" and "SFCC sent spaces" do not become two different states.
+we have to be able to store. Note that nothing normalizes whitespace at this boundary: a `lastName`
+of `'   '` arriving from SFCC is stored verbatim, so "SFCC sent nothing" and "SFCC sent spaces" are
+two different states here. Only the `PATCH` schema rejects blanks, and only for values a client
+sends.
 
 **If the database write fails**, it is logged at `error` and the SFCC data is served anyway. The
 caller asked for a profile and we have one; provisioning is a side effect of answering, so an Aurora
@@ -594,6 +678,47 @@ blip must not take down a read that could be served. The next request retries th
 The repository is bound to `db` here, in a lazy module-level memo mirroring `getSfccProvider` and
 `getBrandConfigMap`. `createCustomerRepository(db)` has exactly one production call site, which is
 what keeps the repository itself injectable and testable against a scratch database.
+
+### The write-through
+
+`updateProfile` runs the read-through backwards — upstream first, then the store:
+
+```
+provider.updateCustomer(identity, toSfccCustomerUpdate(request))   <- SFCC refuses => nothing local changed
+findByExternalId(brand, 'SFCC', 'customerId', x-customer-id)
+  hit          -> repo.updateProfile(id, patch, { modifiedBy: 'CORE_API' })
+  miss         -> repo.upsertFromSfcc(toUpsertInput(..., record))
+                    created     -> done; a fresh row has nothing to clear
+                    not created -> repo.updateProfile(id, patch, ...) as well
+```
+
+**SFCC is written first** because it is the system of record. If it refuses, nothing here has changed
+and the caller sees why.
+
+**The store patch is derived from the request, not from what SFCC echoed back.** A response-derived
+patch cannot tell a field SFCC cleared from one it never had, nor from a custom attribute this site
+silently dropped — and that last case would write NULL over a value the caller had just asked to set.
+The request maps 1:1 onto `buildProfilePatch`'s contract, which is what that function exists for.
+
+**Why the miss branch can still need a second write.** `upsertFromSfcc` does not mean "create": it
+resolves by external id, then by email, and only then inserts. A customer provisioned by
+`MOBILE_APP` with no SFCC link yet lands on the email branch — an existing row. That path runs
+`buildUpsertProfileSet`, whose `!= null` guards **cannot clear a column**, so every field the request
+asked to clear would quietly keep its old value. The follow-up `updateProfile` applies the exact
+patch semantics. It costs one extra version bump on a path that runs at most once per customer.
+
+**`modifiedBy` is `CORE_API`, not `SFCC`.** The change came through this API; SFCC is a second sink
+we also wrote to. That keeps `lastModifiedBy = 'SFCC'` meaning what it means everywhere else — an
+SFCC-sourced refresh. `source` is never touched by an update, so the row's origin survives either
+way.
+
+**If the database write fails, the request fails** — the opposite of the read path, deliberately.
+There, provisioning is a side effect of answering a question we can already answer. Here a `200`
+would claim a change that the very next `GET` contradicts, permanently, because a read never
+refreshes on a hit. `PATCH` is idempotent, so the honest error is also the actionable one: a retry
+converges both systems. The failure is logged saying exactly that — SFCC accepted the update and the
+store did not — and the original error is rethrown unchanged, so a `404`/`409`/`412` from the
+repository keeps its meaning.
 
 ## The SFCC provider
 
@@ -699,7 +824,7 @@ force-refresh on a 401 via `withGuestToken`. All state lives in the closure retu
 on that token call is always a 502: the grant sends no shopper credentials, so a 401 can only mean
 this service's own SLAS client is misconfigured.
 
-### Error mapping for `getCustomer`
+### Error mapping for `getCustomer` and `updateCustomer`
 
 SCAPI errors are RFC 7807 problem+json, and the `type` URI's last segment is the stable key — the
 HTTP status alone is not enough. `problemSlug()` extracts it.
@@ -710,9 +835,23 @@ HTTP status alone is not enough. `problemSlug()` extracts it.
 | 401                                                                           | **401** `UNAUTHORIZED`       |
 | 403                                                                           | **403** `SFCC_ACCESS_DENIED` |
 | 400, or slug `invalid-customer-id` / `invalid-request-parameter`              | **400** `BAD_REQUEST`        |
+| 409 or slug `concurrent-modification`, **after one retry** (write only)       | **409** `CONFLICT`           |
 | 5xx, timeout, connection error                                                | **502** `UPSTREAM_ERROR`     |
 
-Two of those rows are worth explaining.
+The first four rows are `mapCustomerError`, shared by both verbs: a read and a write fail identically
+for a missing customer, an expired token, a refused scope and a malformed id, so it is one table
+rather than two that drift.
+
+**The 409 row is the write's own, and it retries first.** SFCC guards the customer with its own
+optimistic lock, so a patch can lose to a concurrent write — an order placement, a SFSC sync. That is
+transient by definition, so `updateCustomer` reissues the patch exactly once. A second collision is
+real contention and 409 is the honest answer; a loop would just hold the request open while something
+else keeps winning. The retry decision is made on the raw `SfccRequestError`, before mapping —
+mapping first would mean unwrapping a `CustomerError` to recover what the interceptor already knew.
+This is the same shape as the repository's one-shot re-resolve and `withGuestToken`'s one-shot 401
+refresh.
+
+Three of those rows are worth explaining.
 
 **`invalid-customer` maps to 404, not 400.** SFCC answers `400 Invalid Customer` — not 404 — for a
 customer id that does not resolve. The id has already passed a format check at the edge by the time
@@ -726,10 +865,11 @@ have told the gateway the shopper's session was dead when the token SFCC rejecte
 re-login. Verified end to end: a syntactically valid but bogus bearer produces an upstream 401 and this
 service answers `401 UNAUTHORIZED`.
 
-The 403 row is a **safety net, not the mismatch case**. An `x-customer-id` that disagrees with the
-token does _not_ come back as 403 — SCAPI answers `400 invalid-customer`, so a mismatch lands on the
-404 row above. 403 is reserved for a genuine SFCC refusal, most plausibly a scope violation once
-profile writes are added. Do not read a 403 from this service as "wrong customer id."
+The 403 row is **not the mismatch case**, and on the write path it is now genuinely reachable. An
+`x-customer-id` that disagrees with the token does _not_ come back as 403 — SCAPI answers
+`400 invalid-customer`, so a mismatch lands on the 404 row above. 403 means a real SFCC refusal, and
+for `PATCH` the overwhelmingly likely cause is the missing my-account write scope on the SLAS client
+(see [Extending it](#extending-it)). Do not read a 403 from this service as "wrong customer id."
 
 SFCC's own `detail` is never forwarded to the caller in any of these cases; it goes to the logs via
 `upstreamBody`.
@@ -768,6 +908,19 @@ Still unverified:
 - **What a mismatched `x-customer-id` returns for a _registered_ token.** Expected to be
   `400 invalid-customer` → 404, matching the guest-token result, but not yet measured. It fails closed
   either way; only the status shape is in question.
+- **The whole `PATCH` path.** No profile write has reached SFCC yet, because the dev SLAS clients lack
+  the my-account write scope — every attempt returns 403 until that is granted. Three specific
+  unknowns behind it:
+  - **The clear sentinel.** `null` is what OCAPI documents for custom attributes; whether it clears a
+    _standard_ field or comes back as a type violation is unmeasured, and it decides whether clearing
+    works at all. It is isolated to `CLEAR_VALUE` in `providers/sfcc/mappers/customer.mapper.ts` plus
+    one assertion in that mapper's test, so flipping it to `''` is a one-line change that fails the
+    test first.
+  - **Whether `c_postalCode` is defined on both sites' customer object.** If it is not, SFCC accepts
+    the patch and silently drops the attribute. The service logs nothing about that today.
+  - **The `concurrent-modification` slug.** The 409 status is documented; the exact slug SCAPI sends
+    is a guess, so `CONCURRENT_MODIFICATION_SLUGS` carries both spellings. The status row catches it
+    regardless.
 
 ## The database layer
 
@@ -1045,6 +1198,18 @@ way in, so nothing
 above the repository has to remember. A placeholder email normalizes to `null` and can therefore never
 be stored, matched on, or returned.
 
+**This is why `PATCH /v1/member/profile` does not simply call `upsertFromSfcc` with what SFCC echoed
+back.** The upsert cannot clear a column, so a request that asked to clear a phone would clear it
+upstream and silently keep the old value here — and a read never refreshes on a hit, so that value
+would be served forever. The write path uses `updateProfile` for exactly the semantics described
+above, and reaches for the upsert only to provision a row it does not yet hold. See
+[The write-through](#the-write-through).
+
+There is **no name normalizer**. `firstName`, `lastName`, `salutation` and `preferredStore` are
+written verbatim, so a whitespace-only value from a source system is stored as whitespace. The
+`PATCH` schema trims and rejects blanks at the edge, which covers everything a client sends but not
+what arrives through SFCC provisioning.
+
 ### Concurrency
 
 `updateProfile` takes an optional `expectedVersion` and carries it into the `WHERE`. Zero rows affected
@@ -1092,12 +1257,31 @@ linking then finds one of the others pointing elsewhere and fails closed. Mergin
 pnpm test
 ```
 
-These are integration tests against a real PostgreSQL, not unit tests with a fake. `src/test-support/
-test-db.ts` creates a scratch `core_customer_api_test` database, builds its own pool, and brings the
-schema up with the **programmatic migrator** — `migrate(db, { migrationsFolder })`, replaying the same
-SQL production gets, including the hand-written covering index that the TypeScript schema cannot
-express and a push would get wrong. It never imports `client.ts`, avoiding both the module-load env
-parse and the `pino-pretty` worker thread that would keep the runner alive.
+Two kinds, and only one of them needs a database.
+
+The **mapper and validation tests** — `mappers/*.test.ts` in both the customer module and the SFCC
+provider, plus `validations/customer.validation.test.ts` — are pure unit tests with no I/O. They
+carry most of the `PATCH` coverage, because most of that endpoint is field-by-field mapping: the
+phone switch in every direction, `null` reaching the store as a clear, the SCAPI `c_*` renames, and
+two assertions that exist to fail loudly rather than to describe behaviour — one pinning `CLEAR_VALUE`
+so a sandbox finding cannot change the wire format silently, one asserting `toUpdateProfileInput`
+never emits `email`, `birthDate`, `language`, `salutation` or `gender`.
+
+Those tests assert **key presence**, not just value: `assert.equal('phoneMobile' in update, false)`.
+An absent key and a key set to `undefined` are the same to `deepEqual` and opposite everywhere
+downstream, since both `buildProfilePatch` and the SCAPI body branch on `!== undefined`.
+
+The **repository tests** are integration tests against a real PostgreSQL, not unit tests with a fake.
+`src/test-support/test-db.ts` creates a scratch `core_customer_api_test` database, builds its own
+pool, and brings the schema up with the **programmatic migrator** — `migrate(db, { migrationsFolder })`,
+replaying the same SQL production gets, including the hand-written covering index that the TypeScript
+schema cannot express and a push would get wrong. It never imports `client.ts`, avoiding both the
+module-load env parse and the `pino-pretty` worker thread that would keep the runner alive.
+
+**The service layer has no test**, and cannot get one as written: `customer.service.ts` imports
+`getSfccProvider` directly and memoises the real `db`, so there is no seam to substitute either.
+Injecting the provider the way `db` is injected into the repository would make the write-through's
+branching testable. Worth doing; not done.
 
 Three pieces of wiring worth knowing:
 
@@ -1132,14 +1316,18 @@ prevents it — and it is why `rootDir` moved to the build project, since a root
    my-account call takes the shopper's `accessToken` off the identity, an anonymous one wraps in
    `withGuestToken`. Anything scoped to a `{customerId}` is the former.
 
-Two things the first additions will hit:
+For a **write**, add a request type in step 1 and a write-direction mapper in step 3 — built key by
+key like the read one, so an absent key stays absent. `updateCustomer` in `clients/customers.client.ts`
+is the worked example. Two more things:
 
-- **A write operation** should reinstate the one-shot `CONCURRENT_MODIFICATION` retry that registration
-  carried in the auth API; it was dropped here because this service currently only reads.
-- **Addresses and profile writes need a scope change first.** The dev SLAS clients carry
-  `sfcc.shopper-customers.login` / `.register`, which is enough for `getCustomer` but does not include
+- **The one-shot `CONCURRENT_MODIFICATION` retry is in place** on `updateCustomer`, reinstating what
+  registration carried in the auth API. Reuse `isConcurrentModification`; do not turn it into a loop.
+- **Profile and address writes need a scope change first.** The dev SLAS clients carry
+  `sfcc.shopper-customers.login` / `.register`, which is enough for `getCustomer` but not for a
+  my-account write — profile writes need `sfcc.shopper-myaccount.rw`, addresses
   `sfcc.shopper-myaccount.addresses.rw`. That is a SLAS Admin change, not a code change, and a missing
-  scope looks exactly like an identity mismatch — both arrive as a 403.
+  scope looks exactly like an identity mismatch — both arrive as a 403. **This currently blocks any
+  end-to-end verification of `PATCH /v1/member/profile`.**
 
 **A new module.** Create `src/modules/<name>/` with `controllers/`, `services/`, `validations/`,
 `types/` and `routes/`, give the router `Router({ mergeParams: true })` so it can see `:version`, add

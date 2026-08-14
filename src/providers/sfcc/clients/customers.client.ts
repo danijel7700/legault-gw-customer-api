@@ -2,18 +2,26 @@ import type { AxiosInstance } from 'axios';
 
 import type { BrandConfig } from '../../../config/types/brand.types.js';
 import { ErrorCode } from '../../../shared/errors/index.js';
+import { logger } from '../../../shared/logger/logger.js';
 import {
+  CONCURRENT_MODIFICATION_SLUGS,
   CUSTOMER_NOT_FOUND_SLUGS,
   INVALID_CUSTOMER_ID_SLUGS,
 } from '../constants/customers.constant.js';
 import { CustomerError } from '../errors/customer.error.js';
 import { SfccRequestError } from '../errors/sfcc-request.error.js';
 import { createSfccHttpClient } from '../http/sfcc-http.js';
-import type { GetCustomerResponse } from '../types/customers.types.js';
+import type { GetCustomerResponse, UpdateCustomerRequest } from '../types/customers.types.js';
+import type { SfccUpstreamInfo } from '../types/sfcc-http.types.js';
 import { problemSlug } from '../utils/problem-slug.util.js';
 
 export interface CustomersClient {
   getCustomer(accessToken: string, customerId: string): Promise<GetCustomerResponse>;
+  updateCustomer(
+    accessToken: string,
+    customerId: string,
+    body: UpdateCustomerRequest,
+  ): Promise<GetCustomerResponse>;
 }
 
 export function createCustomersClient(brandConfig: BrandConfig): CustomersClient {
@@ -24,6 +32,8 @@ export function createCustomersClient(brandConfig: BrandConfig): CustomersClient
   return {
     getCustomer: (accessToken, customerId) =>
       getCustomer(http, brandConfig, accessToken, customerId),
+    updateCustomer: (accessToken, customerId, body) =>
+      updateCustomer(http, brandConfig, accessToken, customerId, body),
   };
 }
 
@@ -39,26 +49,94 @@ async function getCustomer(
       params: { siteId: brandConfig.siteId },
     })
     .catch((error: unknown) => {
-      throw mapGetCustomerError(error);
+      throw mapCustomerError(error);
     });
 
-  if (typeof response.data.customerId !== 'string' || response.data.customerId.length === 0) {
-    throw new SfccRequestError('SFCC customer response contained no customerId');
-  }
+  requireCustomerId(response.data);
 
   return response.data;
 }
 
-function mapGetCustomerError(error: unknown): unknown {
-  if (!(error instanceof SfccRequestError)) {
-    return error;
-  }
+async function updateCustomer(
+  http: AxiosInstance,
+  brandConfig: BrandConfig,
+  accessToken: string,
+  customerId: string,
+  body: UpdateCustomerRequest,
+): Promise<GetCustomerResponse> {
+  try {
+    return await sendUpdate(http, brandConfig, accessToken, customerId, body);
+  } catch (error: unknown) {
+    if (!isConcurrentModification(error)) {
+      throw mapCustomerError(error);
+    }
 
-  const upstream = {
+    logger.debug(
+      { customerId },
+      'SFCC reported a concurrent modification, retrying the patch once',
+    );
+
+    return sendUpdate(http, brandConfig, accessToken, customerId, body).catch(
+      (retryError: unknown) => {
+        throw mapUpdateCustomerError(retryError);
+      },
+    );
+  }
+}
+
+async function sendUpdate(
+  http: AxiosInstance,
+  brandConfig: BrandConfig,
+  accessToken: string,
+  customerId: string,
+  body: UpdateCustomerRequest,
+): Promise<GetCustomerResponse> {
+  const response = await http.patch<GetCustomerResponse>(
+    `/customers/${encodeURIComponent(customerId)}`,
+    body,
+    {
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      params: { siteId: brandConfig.siteId },
+    },
+  );
+
+  requireCustomerId(response.data);
+
+  return response.data;
+}
+
+function requireCustomerId(data: GetCustomerResponse): void {
+  if (typeof data.customerId !== 'string' || data.customerId.length === 0) {
+    throw new SfccRequestError('SFCC customer response contained no customerId');
+  }
+}
+
+function upstreamOf(error: SfccRequestError): SfccUpstreamInfo {
+  return {
     upstreamStatus: error.upstreamStatus,
     upstreamCode: error.upstreamCode,
     upstreamBody: error.upstreamBody,
   };
+}
+
+function isConcurrentModification(error: unknown): boolean {
+  if (!(error instanceof SfccRequestError)) {
+    return false;
+  }
+
+  const slug = problemSlug(error.upstreamBody);
+
+  return (
+    error.upstreamStatus === 409 || (slug !== undefined && CONCURRENT_MODIFICATION_SLUGS.has(slug))
+  );
+}
+
+function mapCustomerError(error: unknown): unknown {
+  if (!(error instanceof SfccRequestError)) {
+    return error;
+  }
+
+  const upstream = upstreamOf(error);
   const slug = problemSlug(error.upstreamBody);
 
   if (error.upstreamStatus === 404 || (slug !== undefined && CUSTOMER_NOT_FOUND_SLUGS.has(slug))) {
@@ -93,4 +171,17 @@ function mapGetCustomerError(error: unknown): unknown {
   }
 
   return error;
+}
+
+function mapUpdateCustomerError(error: unknown): unknown {
+  if (error instanceof SfccRequestError && isConcurrentModification(error)) {
+    return new CustomerError(
+      409,
+      'The customer profile was modified concurrently, please retry',
+      ErrorCode.CONFLICT,
+      upstreamOf(error),
+    );
+  }
+
+  return mapCustomerError(error);
 }

@@ -47,7 +47,17 @@ export interface GetCustomerResponse {
   readonly addresses?: readonly CustomerAddressResponse[];
   readonly paymentInstruments?: readonly PaymentInstrumentResponse[];
 
+  readonly c_postalCode?: string;
   readonly c_preferredStore?: string;
   readonly c_sscid?: string;
   readonly c_ssccid?: string;
+}
+
+export interface UpdateCustomerRequest {
+  readonly firstName?: string | null;
+  readonly lastName?: string | null;
+  readonly phoneHome?: string | null;
+  readonly phoneMobile?: string | null;
+  readonly c_postalCode?: string | null;
+  readonly c_preferredStore?: string | null;
 }

@@ -31,6 +31,7 @@ export function toUpsertInput(
       language: normalizeLanguage(record.preferredLocale),
       phoneHome: record.phoneHome,
       phoneMobile: record.phoneMobile,
+      postalCode: record.postalCode,
       preferredStore: record.preferredStore,
     },
     externalIds: toExternalIds(customerId, record),
@@ -95,6 +96,8 @@ export function toCustomerProfile(record: SfccCustomerRecord): CustomerProfile {
     phone: record.phoneMobile ?? record.phoneHome ?? record.phoneBusiness,
     birthday: record.birthday,
     preferredLocale: record.preferredLocale,
+    postalCode: record.postalCode,
+    preferredStore: record.preferredStore,
     addresses: record.addresses?.map(toResponseAddress),
   };
 }

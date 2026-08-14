@@ -21,15 +21,6 @@ export interface SfccAddressRecord {
   readonly preferred?: boolean;
 }
 
-/**
- * Everything SFCC knows about a customer, as the provider reports it.
- *
- * This is what provisioning writes from, so it keeps the identifiers the public
- * contract omits and the phones SFCC records separately. The `c_*` attributes
- * arrive renamed, so no SFCC-instance naming survives past the provider.
- *
- * Not a response shape — `CustomerProfile` is what the endpoint returns.
- */
 export interface SfccCustomerRecord {
   readonly customerId: string;
   readonly customerNo?: string;
@@ -43,6 +34,7 @@ export interface SfccCustomerRecord {
   readonly phoneBusiness?: string;
   readonly birthday?: string;
   readonly preferredLocale?: string;
+  readonly postalCode?: string;
   readonly preferredStore?: string;
 
   /** SFSC Account id, from `c_sscid`. Mondou in practice. */
@@ -68,13 +60,6 @@ export interface CustomerAddress {
   readonly preferred?: boolean;
 }
 
-/**
- * What `GET /v1/member/profile` returns.
- *
- * Answered from our own database once the customer has been provisioned, so it
- * carries no `paymentInstruments`: card data is deliberately not stored, and a
- * field that only appeared on a cache miss would be worse than no field at all.
- */
 export interface CustomerProfile {
   readonly email?: string;
   readonly firstName?: string;
@@ -82,10 +67,34 @@ export interface CustomerProfile {
   readonly phone?: string;
   readonly birthday?: string;
   readonly preferredLocale?: string;
+  readonly postalCode?: string;
+  readonly preferredStore?: string;
   readonly addresses?: readonly CustomerAddress[];
 }
 
 export interface CustomerIdentity {
   readonly customerId: string;
   readonly accessToken: string;
+}
+
+export const PHONE_TYPES = ['mobile', 'home'] as const;
+
+export type PhoneType = (typeof PHONE_TYPES)[number];
+
+export interface UpdateMemberProfileRequest {
+  readonly firstName?: string | null;
+  readonly lastName?: string | null;
+  readonly phone?: string | null;
+  readonly phoneType?: PhoneType;
+  readonly postalCode?: string | null;
+  readonly preferredStore?: string | null;
+}
+
+export interface SfccCustomerUpdate {
+  readonly firstName?: string | null;
+  readonly lastName?: string | null;
+  readonly phoneHome?: string | null;
+  readonly phoneMobile?: string | null;
+  readonly postalCode?: string | null;
+  readonly preferredStore?: string | null;
 }

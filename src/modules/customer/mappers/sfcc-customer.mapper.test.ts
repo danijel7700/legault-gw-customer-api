@@ -96,10 +96,20 @@ describe('toUpsertInput profile', () => {
     assert.equal(input.profile.phoneMobile, '514-555-1111');
   });
 
-  it('carries the custom preferredStore attribute through', () => {
-    const input = toUpsertInput('rens', CUSTOMER_ID, record({ preferredStore: 'liberty-village' }));
+  it('carries the custom attributes through', () => {
+    const input = toUpsertInput(
+      'rens',
+      CUSTOMER_ID,
+      record({ preferredStore: 'liberty-village', postalCode: 'h2x 1y4' }),
+    );
 
     assert.equal(input.profile.preferredStore, 'liberty-village');
+    // Raw. normalizePostalCode runs at the repository boundary, not here.
+    assert.equal(input.profile.postalCode, 'h2x 1y4');
+  });
+
+  it('leaves postalCode unset when SFCC did not send one', () => {
+    assert.equal(toUpsertInput('rens', CUSTOMER_ID, record()).profile.postalCode, undefined);
   });
 
   it('leaves the SFSC-sourced fields unset — SFCC has no source for them', () => {
@@ -107,7 +117,6 @@ describe('toUpsertInput profile', () => {
 
     assert.equal(input.profile.gender, undefined);
     assert.equal(input.profile.salutation, undefined);
-    assert.equal(input.profile.postalCode, undefined);
   });
 
   it('marks source and brand', () => {
@@ -201,5 +210,14 @@ describe('toCustomerProfile from an SFCC record — the degraded path', () => {
       toCustomerProfile(record({ addresses: [{}] })).addresses?.[0]?.fullName,
       undefined,
     );
+  });
+
+  it('surfaces the account-level postalCode and preferredStore', () => {
+    const profile = toCustomerProfile(
+      record({ postalCode: 'A1A 1A1', preferredStore: 'liberty-village' }),
+    );
+
+    assert.equal(profile.postalCode, 'A1A 1A1');
+    assert.equal(profile.preferredStore, 'liberty-village');
   });
 });

@@ -235,6 +235,69 @@ describe('updateProfile patch semantics', () => {
       CustomerNotFoundError,
     );
   });
+
+  it('normalizes an account-level postal code the way the address path does', async () => {
+    const created = await repo.create(createInput());
+
+    const updated = await repo.updateProfile(
+      created.id,
+      { postalCode: 'h2x 1y4' },
+      { modifiedBy: 'CORE_API' },
+    );
+
+    // Callers send whatever they were shown; the store keeps one form so two
+    // spellings of the same code are one value.
+    assert.equal(updated.profile.postalCode, 'H2X1Y4');
+  });
+
+  it('clears postalCode and preferredStore with null', async () => {
+    const created = await repo.create(
+      createInput({
+        profile: { lastName: 'Lovelace', postalCode: 'H2X1Y4', preferredStore: '2078' },
+      }),
+    );
+
+    const updated = await repo.updateProfile(
+      created.id,
+      { postalCode: null, preferredStore: null },
+      { modifiedBy: 'CORE_API' },
+    );
+
+    assert.equal(updated.profile.postalCode, null);
+    assert.equal(updated.profile.preferredStore, null);
+  });
+
+  it('is the only way to clear a field an SFCC upsert would have preserved', async () => {
+    // Why the update path exists alongside upsertFromSfcc: a customer known
+    // under another key resolves to an existing row, and the upsert overwrites
+    // but never clears. Every field a PATCH asked to clear would keep its old
+    // value if the upsert were the last word.
+    const created = await repo.create(
+      createInput({
+        source: 'MOBILE_APP',
+        profile: { email: 'ada.lovelace@example.com', phoneMobile: '514-555-1111' },
+        externalIds: [],
+      }),
+    );
+
+    const { customer, created: inserted } = await repo.upsertFromSfcc(
+      upsertInput({ profile: { email: 'ada.lovelace@example.com', lastName: 'Lovelace' } }),
+    );
+
+    assert.equal(inserted, false);
+    assert.equal(customer.id, created.id);
+    assert.equal(customer.profile.phoneMobile, '514-555-1111');
+
+    const updated = await repo.updateProfile(
+      customer.id,
+      { phoneMobile: null },
+      { modifiedBy: 'CORE_API' },
+    );
+
+    assert.equal(updated.profile.phoneMobile, null);
+    assert.equal(updated.metadata.source, 'MOBILE_APP');
+    assert.equal(updated.metadata.lastModifiedBy, 'CORE_API');
+  });
 });
 
 describe('upsertFromSfcc resolution order', () => {

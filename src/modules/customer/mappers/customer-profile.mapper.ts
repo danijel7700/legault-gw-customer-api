@@ -14,6 +14,8 @@ export function toCustomerProfile(customer: Customer): CustomerProfile {
     phone: profile.phoneMobile ?? profile.phoneHome ?? undefined,
     birthday: profile.birthDate ?? undefined,
     preferredLocale: profile.language ?? undefined,
+    postalCode: profile.postalCode ?? undefined,
+    preferredStore: profile.preferredStore ?? undefined,
     addresses: customer.addresses.map(toResponseAddress),
   };
 }

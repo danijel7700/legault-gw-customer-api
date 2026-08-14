@@ -26,6 +26,7 @@ export const REDACT_PATHS: readonly string[] = [
   'phoneHome',
   'phoneBusiness',
   'birthday',
+  'postalCode',
   '*.email',
   '*.firstName',
   '*.lastName',
@@ -34,10 +35,8 @@ export const REDACT_PATHS: readonly string[] = [
   '*.phoneHome',
   '*.phoneBusiness',
   '*.birthday',
+  '*.postalCode',
 
-  // The profile now carries street addresses and card details. These are
-  // nested one level inside arrays, which the flat `*.` wildcards above cannot
-  // reach, so the array paths are spelled out.
   'addresses[*].address1',
   'addresses[*].address2',
   'addresses[*].postalCode',
