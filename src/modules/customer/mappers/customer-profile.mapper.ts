@@ -20,10 +20,11 @@ export function toCustomerProfile(customer: Customer): CustomerProfile {
   };
 }
 
-function toResponseAddress(address: StoredAddress): CustomerAddress {
+export function toResponseAddress(address: StoredAddress): CustomerAddress {
   const fullName = [address.firstName, address.lastName].filter(Boolean).join(' ');
 
   return {
+    id: address.id,
     addressId: address.sfccAddressId ?? '',
     address1: address.street1 ?? undefined,
     address2: address.street2 ?? undefined,

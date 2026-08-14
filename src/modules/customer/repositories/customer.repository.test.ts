@@ -14,6 +14,7 @@ import {
 } from '../errors/customer.error.js';
 
 import { createCustomerRepository } from './customer.repository.js';
+import { uniqueViolationConstraint } from './utils/pg-error.util.js';
 import type {
   CreateCustomerInput,
   CustomerRepository,
@@ -39,7 +40,9 @@ beforeEach(async () => {
 });
 
 /** Table name is a literal in every call site, never user input. */
-async function countRows(table: 'customer' | 'customer_external_id'): Promise<number> {
+async function countRows(
+  table: 'customer' | 'customer_external_id' | 'customer_address',
+): Promise<number> {
   const result = await testDb.pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${table}`);
 
   return result.rows[0]?.n ?? 0;
@@ -469,7 +472,11 @@ describe('addresses', () => {
     const home = await repo.upsertAddress(created.id, { sfccAddressId: 'Home', isPreferred: true });
     const work = await repo.upsertAddress(created.id, { sfccAddressId: 'Work' });
 
-    await repo.setPreferredAddress(created.id, work.id);
+    const promoted = await repo.setPreferredAddress(created.id, work.id);
+
+    // Returned rather than read back: the swap already fetched the row.
+    assert.equal(promoted.id, work.id);
+    assert.equal(promoted.isPreferred, true);
 
     const addresses = await repo.listAddresses(created.id);
     const preferred = addresses.filter((address) => address.isPreferred);
@@ -477,6 +484,73 @@ describe('addresses', () => {
     assert.equal(preferred.length, 1, 'the partial unique index allows exactly one');
     assert.equal(preferred[0]?.id, work.id);
     assert.equal(addresses.find((address) => address.id === home.id)?.isPreferred, false);
+  });
+
+  it('upsertAddress renames a row when it is given our id, instead of inserting', async () => {
+    const created = await repo.create(createInput());
+    const home = await repo.upsertAddress(created.id, {
+      sfccAddressId: 'Home',
+      street1: '1 Rue Sainte-Catherine',
+    });
+
+    // What a rename looks like coming back from SFCC: our id, the new name.
+    const renamed = await repo.upsertAddress(created.id, {
+      id: home.id,
+      sfccAddressId: 'Chalet',
+      street1: '1 Rue Sainte-Catherine',
+    });
+
+    assert.equal(renamed.id, home.id, 'the same row, renamed');
+    assert.equal(renamed.sfccAddressId, 'Chalet');
+    assert.equal(await countRows('customer_address'), 1, 'no duplicate row');
+  });
+
+  it('upsertAddress does not overwrite a sibling that already holds the new name', async () => {
+    const created = await repo.create(createInput());
+    const home = await repo.upsertAddress(created.id, { sfccAddressId: 'Home' });
+    await repo.upsertAddress(created.id, { sfccAddressId: 'Work', street1: 'Keep me' });
+
+    // Matching by name here would find Work and silently overwrite it, losing a
+    // row the caller never mentioned. The unique index is the backstop, and the
+    // constraint is asserted so this cannot start passing for another reason.
+    await assert.rejects(
+      () => repo.upsertAddress(created.id, { id: home.id, sfccAddressId: 'Work' }),
+      (error: unknown) => {
+        assert.equal(uniqueViolationConstraint(error), 'customer_address_sfcc_id_uq');
+
+        return true;
+      },
+    );
+
+    const addresses = await repo.listAddresses(created.id);
+
+    assert.equal(addresses.length, 2);
+    assert.equal(addresses.find((a) => a.sfccAddressId === 'Work')?.street1, 'Keep me');
+  });
+
+  it('still matches on sfccAddressId when the SFCC sync path supplies no id', async () => {
+    const created = await repo.create(createInput());
+    const first = await repo.upsertAddress(created.id, { sfccAddressId: 'Home', city: 'Montreal' });
+    const second = await repo.upsertAddress(created.id, { sfccAddressId: 'Home', city: 'Laval' });
+
+    assert.equal(second.id, first.id);
+    assert.equal(await countRows('customer_address'), 1);
+  });
+
+  it('address writes stamp lastModifiedBy on the parent', async () => {
+    const created = await repo.create(createInput());
+
+    assert.equal(created.metadata.lastModifiedBy, 'SFCC');
+
+    const address = await repo.upsertAddress(created.id, { sfccAddressId: 'Home' });
+
+    assert.equal((await repo.findById(created.id))?.metadata.lastModifiedBy, 'CORE_API');
+
+    await repo.setPreferredAddress(created.id, address.id);
+    assert.equal((await repo.findById(created.id))?.metadata.lastModifiedBy, 'CORE_API');
+
+    // The origin is never rewritten by a later write.
+    assert.equal((await repo.findById(created.id))?.metadata.source, 'SFCC');
   });
 
   it('upsertAddress can move the preferred flag onto a new row', async () => {

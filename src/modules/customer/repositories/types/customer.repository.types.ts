@@ -86,7 +86,6 @@ export interface UpsertFromSfccInput {
 }
 
 export interface UpsertAddressInput extends CreateAddressInput {
-  /** Match key when `sfccAddressId` is absent. Omit to insert a new row. */
   readonly id?: string;
 }
 
@@ -114,7 +113,15 @@ export interface CustomerRepository {
   upsertFromSfcc(input: UpsertFromSfccInput): Promise<UpsertFromSfccResult>;
 
   listAddresses(customerId: string): Promise<CustomerAddress[]>;
-  upsertAddress(customerId: string, input: UpsertAddressInput): Promise<CustomerAddress>;
-  deleteAddress(customerId: string, addressId: string): Promise<void>;
-  setPreferredAddress(customerId: string, addressId: string): Promise<void>;
+  upsertAddress(
+    customerId: string,
+    input: UpsertAddressInput,
+    modifiedBy?: SourceSystem,
+  ): Promise<CustomerAddress>;
+  deleteAddress(customerId: string, addressId: string, modifiedBy?: SourceSystem): Promise<void>;
+  setPreferredAddress(
+    customerId: string,
+    addressId: string,
+    modifiedBy?: SourceSystem,
+  ): Promise<CustomerAddress>;
 }

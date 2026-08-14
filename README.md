@@ -47,13 +47,19 @@ The `db:*` scripts need a reachable PostgreSQL and the `DB_*` block set — see
 
 ## The API surface
 
-| Endpoint                   | Purpose                                                                   |
-| -------------------------- | ------------------------------------------------------------------------- |
-| `GET /health`              | Liveness, for the load balancer. No brand, no version.                    |
-| `GET /health/ready`        | Readiness — can it reach PostgreSQL. No brand, no version.                |
-| `GET /v1/health`           | Which SFCC org this brand is pointed at. Needs `x-brand`.                 |
-| `GET /v1/member/profile`   | The shopper's profile. Needs `x-brand`, `x-customer-id`, `Authorization`. |
-| `PATCH /v1/member/profile` | Updates it. Same headers, plus a JSON body.                               |
+| Endpoint                                 | Purpose                                                                   |
+| ---------------------------------------- | ------------------------------------------------------------------------- |
+| `GET /health`                            | Liveness, for the load balancer. No brand, no version.                    |
+| `GET /health/ready`                      | Readiness — can it reach PostgreSQL. No brand, no version.                |
+| `GET /v1/health`                         | Which SFCC org this brand is pointed at. Needs `x-brand`.                 |
+| `GET /v1/member/profile`                 | The shopper's profile. Needs `x-brand`, `x-customer-id`, `Authorization`. |
+| `PATCH /v1/member/profile`               | Updates it. Same headers, plus a JSON body.                               |
+| `POST /v1/member/addresses`              | Adds an address. Answers `201`.                                           |
+| `PATCH /v1/member/addresses/:id`         | Updates one, renaming included.                                           |
+| `DELETE /v1/member/addresses/:id`        | Removes one. Answers `204`.                                               |
+| `PUT /v1/member/addresses/:id/preferred` | Makes one the preferred address.                                          |
+
+All the `/member` routes take the same three headers.
 
 ```bash
 curl -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
@@ -73,6 +79,7 @@ curl -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
   "preferredStore": "liberty-village",
   "addresses": [
     {
+      "id": "9f8c1e02-4a3b-4c5d-8e6f-1a2b3c4d5e6f",
       "addressId": "Home",
       "address1": "1 Rue Sainte-Catherine",
       "address2": "Apartment 49",
@@ -143,6 +150,56 @@ Blank strings are rejected rather than stored: `null` is how a field is cleared,
 almost always a client bug. Note this is enforced by the write schema only — nothing normalizes
 whitespace at the repository boundary, so a name arriving through SFCC provisioning is still stored
 as sent.
+
+### The address endpoints
+
+```bash
+curl -X POST -H 'x-brand: rens' -H 'x-customer-id: abk1p3xW9Yc5tRvQ' \
+  -H "Authorization: Bearer $SHOPPER_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"label":"Home","firstName":"Ada","lastName":"Lovelace",
+       "street1":"1 Rue Sainte-Catherine","city":"Montreal","stateCode":"QC",
+       "postalCode":"H2X1Y4","phone":"514-555-1111"}' \
+  http://localhost:3000/v1/member/addresses
+```
+
+`POST` answers `201` with the created address, `PATCH` and `PUT /preferred` answer `200` with the
+updated one, and `DELETE` answers `204` with no body. All four move the customer's `version`, so the
+ETag changes on an address write just as it does on a profile write.
+
+**`:id` is our own row id, not the SFCC address name.** It is the `id` on every address in the
+profile response, and it is a uuid — the route rejects anything else with a 400 rather than looking
+it up and finding nothing. The service translates it into the SFCC name when it calls upstream,
+using the row it has to load anyway.
+
+**The request says `label`, the response says `addressId`.** They are the same thing: the address's
+name at SFCC, which is unique per customer. The asymmetry is deliberate — `addressId` is what the
+profile response has always called it, and renaming that field would break every existing reader.
+
+**`label` is editable, and changing it renames the address.** SFCC takes an `addressId` in the patch
+body that differs from the one in the URL as a rename, and the local row's `sfcc_address_id` moves in
+the same write. A name the customer already uses comes back as a **409**, not a 500.
+
+| Field                                                                                   | POST                       | PATCH                  |
+| --------------------------------------------------------------------------------------- | -------------------------- | ---------------------- |
+| `label`, `firstName`, `lastName`, `street1`, `city`, `stateCode`, `postalCode`, `phone` | required                   | optional, not nullable |
+| `street2`, `phoneType`                                                                  | optional, nullable         | optional, nullable     |
+| `countryCode`                                                                           | optional, defaults to `CA` | optional, not nullable |
+
+`PATCH` is three-state like the profile patch — absent leaves the value alone, `null` clears it, a
+value sets it — but **only `street2` and `phoneType` can be cleared**. Clearing a city or a postal
+code would leave an address nothing could be delivered to, so `null` on those is a 400.
+
+Two things SFCC forces that the client is not made to know about:
+
+- **Every address `PATCH` must carry `addressId`, `countryCode` and `lastName`**, changing or not.
+  They are filled from the stored row, and a client-supplied value wins.
+- **A `PUT /preferred` is that same `PATCH`** with `preferred: true`. SFCC has no dedicated endpoint
+  and demotes the previous preferred address itself, so it is one upstream call.
+
+If the stored row is missing one of those three fields, the request is a **422** rather than a patch
+padded with empty strings. It means the row was provisioned incompletely, which is a thing worth
+finding out about rather than papering over.
 
 ### The inbound header contract
 
@@ -460,8 +517,8 @@ src/
       clients/
         slas.client.ts              guest token: client_credentials, cached, single-flight
                                     (currently unreferenced — see below)
-        customers.client.ts         Shopper Customers: getCustomer, updateCustomer,
-                                    shared error mapping + the one-shot 409 retry
+        customers.client.ts         Shopper Customers: the customer and address
+                                    calls, shared error mapping, one-shot 409 retry
       constants/                    slas, customers, sfcc-http
       types/                        slas, customers, sfcc-http
       errors/                       sfcc-request (502), customer (mapped 4xx)
@@ -489,15 +546,18 @@ src/
   modules/
     customer/
       controllers/customer.controller.ts   thin: validated input -> service -> response
-      services/customer.service.ts         read-through and write-through
-      validations/customer.validation.ts   zod: identity headers + the update body
+      services/customer.service.ts         read-through and the write-throughs
+      validations/
+        customer.validation.ts             zod: identity headers + the profile body
+        customer-address.validation.ts     zod: the :id param + both address bodies
       types/customer.types.ts              THE CONTRACT: CustomerProfile, no SFCC
       mappers/
         customer.mapper.ts                 rows -> domain types
         customer-profile.mapper.ts         stored aggregate -> CustomerProfile
         sfcc-customer.mapper.ts            SFCC record -> upsert input / degraded response
         customer-update.mapper.ts          update request -> patch + SFCC update
-      routes/customer.routes.ts            GET /profile, PATCH /profile
+        customer-address.mapper.ts         address requests <-> SFCC, the required-field fill
+      routes/customer.routes.ts            /profile and /addresses
       index.ts                             module barrel — router + contract types
     health/
       controllers/ types/ routes/ index.ts
@@ -550,11 +610,16 @@ interface UpdateMemberProfileRequest {
 }
 ```
 
-That file declares **four** contracts, and the distinctions matter:
+That file declares the module's contracts, and the distinctions matter:
 
-- **`CustomerProfile`** — what both endpoints return, built from our own stored aggregate.
-- **`UpdateMemberProfileRequest`** — what `PATCH` accepts. Deliberately a subset of the profile:
-  `email` and `birthday` are identity, not preferences, and changing them is not this endpoint's job.
+- **`CustomerProfile`** — what both profile endpoints return, built from our own stored aggregate.
+- **`UpdateMemberProfileRequest`** — what `PATCH /profile` accepts. Deliberately a subset of the
+  profile: `email` and `birthday` are identity, not preferences, and changing them is not this
+  endpoint's job.
+- **`CreateMemberAddressRequest` / `UpdateMemberAddressRequest`** — the address bodies. They say
+  `label` where the response says `addressId`; both mean the address's name at SFCC.
+- **`SfccAddressCreate` / `SfccAddressUpdate`** — what the provider applies upstream, still in
+  module vocabulary (`street1`, not `address1`).
 - **`SfccCustomerRecord`** — what the SFCC provider reports, and what provisioning writes from. It
   keeps the identifiers the response omits (`customerId`, `customerNo`, `login`), the phones SFCC
   records separately, and the four `c_*` attributes Core stores, renamed to `postalCode`,
@@ -583,10 +648,16 @@ replaced, forever, because a cache hit never refreshes. That expansion lives in
 provider has no way to see why one number becomes two.
 
 `CustomerAddress` is declared alongside. Its mapper exists for the same reason as the top-level one:
-SFCC types `addressId` as optional, but it is how a caller addresses a single entry, so the contract
-makes it required. Note the store does the opposite — `sfcc_address_id` is nullable there precisely
-so that `customer_address_sfcc_id_uq` (partial on `IS NOT NULL`) does not collide every unidentified
-address on `('', customerId)`.
+SFCC types `addressId` as optional, but it names the entry, so the contract makes it required. Note
+the store does the opposite — `sfcc_address_id` is nullable there precisely so that
+`customer_address_sfcc_id_uq` (partial on `IS NOT NULL`) does not collide every unidentified address
+on `('', customerId)`.
+
+It carries **two** ids, and they are not interchangeable: `id` is our row id and what the address
+endpoints take in the URL, while `addressId` is the SFCC name a caller sets through `label`. `id` is
+optional on the contract because the degraded paths — the profile read that could not provision, and
+an address write SFCC accepted but we failed to store — map from an SFCC record with no row behind
+it. Omitting the field there is honest; inventing one would not be.
 
 **Payment instruments are no longer part of the contract.** They were, when every request went
 straight to SFCC. Now that the response is served from our database and card data is deliberately not
@@ -674,6 +745,39 @@ sends.
 **If the database write fails**, it is logged at `error` and the SFCC data is served anyway. The
 caller asked for a profile and we have one; provisioning is a side effect of answering, so an Aurora
 blip must not take down a read that could be served. The next request retries the write.
+
+### The address writes
+
+All four run the same three steps: **resolve the customer, call SFCC, mirror locally.**
+
+The resolve is a read — `resolveStoredCustomer`, the read-through above with the response mapping
+stripped off. It comes first because the `:id` is ours and SFCC only knows the address by name, and
+because `POST` needs the customer row to exist before anything can hang off it. A shopper who has
+never fetched their profile is provisioned here rather than getting a spurious 404. The aggregate
+eager-loads its addresses, so translating `:id` costs no extra query — the row is already in hand,
+and a `:id` that is not in it is a 404.
+
+**A local failure does not fail the request** — the opposite of the profile write, deliberately.
+There, a stored row that contradicts the 200 would be served by every subsequent read, forever. Here
+the change did land upstream, rolling it back is not an option, and the next profile read
+re-provisions from SFCC if the row is stale. So the failure is logged and the endpoint answers from
+what SFCC reported.
+
+That log line is careful about one thing: **it never carries the request body or a raw driver
+error.** A drizzle failure puts its bound parameters in the message, and on this path those are the
+customer's name, street and phone. Only an error we authored is passed through as `err`; anything
+else is reduced to its name and pg code, which still separates a unique violation from a dropped
+connection.
+
+`PATCH` and `POST` both mirror **from the SFCC response, never from the request**. The response
+carries the whole address while a patch carries only what changed, and the address write is a full
+replacement — a patch-shaped input would null every field the caller left alone. The one field that
+needs care is `preferred`: SFCC omitting it would demote the row, so it falls back to the stored flag
+on an update and to `false` on a create.
+
+`DELETE` is idempotent at both ends. SFCC answering 404 counts as removed — it is the state that was
+asked for — and `repo.deleteAddress` already ignores a row that is not there, moving the version only
+when something actually was.
 
 The repository is bound to `db` here, in a lazy module-level memo mirroring `getSfccProvider` and
 `getBrandConfigMap`. `createCustomerRepository(db)` has exactly one production call site, which is
@@ -824,7 +928,7 @@ force-refresh on a 401 via `withGuestToken`. All state lives in the closure retu
 on that token call is always a 502: the grant sends no shopper credentials, so a 401 can only mean
 this service's own SLAS client is misconfigured.
 
-### Error mapping for `getCustomer` and `updateCustomer`
+### Error mapping for the customer and address calls
 
 SCAPI errors are RFC 7807 problem+json, and the `type` URI's last segment is the stable key — the
 HTTP status alone is not enough. `problemSlug()` extracts it.
@@ -835,23 +939,32 @@ HTTP status alone is not enough. `problemSlug()` extracts it.
 | 401                                                                           | **401** `UNAUTHORIZED`       |
 | 403                                                                           | **403** `SFCC_ACCESS_DENIED` |
 | 400, or slug `invalid-customer-id` / `invalid-request-parameter`              | **400** `BAD_REQUEST`        |
-| 409 or slug `concurrent-modification`, **after one retry** (write only)       | **409** `CONFLICT`           |
+| slug `address-already-exists` — address writes, **no retry**                  | **409** `CONFLICT`           |
+| 409 or slug `concurrent-modification`, **after one retry** (writes only)      | **409** `CONFLICT`           |
+| 404 on an address `DELETE`                                                    | **204** — already removed    |
 | 5xx, timeout, connection error                                                | **502** `UPSTREAM_ERROR`     |
 
-The first four rows are `mapCustomerError`, shared by both verbs: a read and a write fail identically
+The first four rows are `mapCustomerError`, shared by every verb: a read and a write fail identically
 for a missing customer, an expired token, a refused scope and a malformed id, so it is one table
-rather than two that drift.
+rather than several that drift.
 
-**The 409 row is the write's own, and it retries first.** SFCC guards the customer with its own
-optimistic lock, so a patch can lose to a concurrent write — an order placement, a SFSC sync. That is
-transient by definition, so `updateCustomer` reissues the patch exactly once. A second collision is
+**The 409 rows are the writes' own, and the order between them matters.** SFCC guards the customer
+with its own optimistic lock, so a write can lose to a concurrent one — an order placement, a SFSC
+sync. That is transient by definition, so the write is reissued exactly once. A second collision is
 real contention and 409 is the honest answer; a loop would just hold the request open while something
-else keeps winning. The retry decision is made on the raw `SfccRequestError`, before mapping —
-mapping first would mean unwrapping a `CustomerError` to recover what the interceptor already knew.
-This is the same shape as the repository's one-shot re-resolve and `withGuestToken`'s one-shot 401
-refresh.
+else keeps winning. Same shape as the repository's one-shot re-resolve and `withGuestToken`'s
+one-shot 401 refresh.
 
-Three of those rows are worth explaining.
+A rename collision arrives as a 409 too, which is why `isRenameConflict` is checked **first** and
+matches on the slug alone: a bare status check would send a name collision into the retry, where it
+collides again to no purpose. It is a permanent condition, so it maps straight to a 409 the caller
+can act on.
+
+**A 404 on an address `DELETE` is success.** The address is gone, which is what was asked for, and
+this is the one place the shared 404 row is deliberately not applied — the same idempotency the local
+delete already has.
+
+Three of the rows above are worth explaining.
 
 **`invalid-customer` maps to 404, not 400.** SFCC answers `400 Invalid Customer` — not 404 — for a
 customer id that does not resolve. The id has already passed a format check at the edge by the time
@@ -908,9 +1021,13 @@ Still unverified:
 - **What a mismatched `x-customer-id` returns for a _registered_ token.** Expected to be
   `400 invalid-customer` → 404, matching the guest-token result, but not yet measured. It fails closed
   either way; only the status shape is in question.
-- **The whole `PATCH` path.** No profile write has reached SFCC yet, because the dev SLAS clients lack
-  the my-account write scope — every attempt returns 403 until that is granted. Three specific
-  unknowns behind it:
+- **Every write path — the profile `PATCH` and all four address endpoints.** Nothing has reached SFCC
+  yet, because the dev SLAS clients lack the my-account write scopes — every attempt returns 403
+  until those are granted. Four specific unknowns behind it:
+  - **The SCAPI rename-conflict slug.** `ADDRESS_ALREADY_EXISTS_SLUGS` carries two plausible
+    spellings and the 409 status is the backstop, but neither has been seen from a real tenant. If
+    the real slug is a third spelling, a rename collision goes through the concurrent-modification
+    retry once before still ending up a 409 — wasteful, not wrong.
   - **The clear sentinel.** `null` is what OCAPI documents for custom attributes; whether it clears a
     _standard_ field or comes back as a type violation is unmeasured, and it decides whether clearing
     works at all. It is isolated to `CLEAR_VALUE` in `providers/sfcc/mappers/customer.mapper.ts` plus
@@ -989,6 +1106,12 @@ Four indexes carry real semantics, and they live in the table files' array callb
 | `customer_external_id_uq`       | the identity map the whole service resolves through                                                       |
 | `customer_address_preferred_uq` | one preferred address per customer, `WHERE is_preferred`                                                  |
 | `customer_address_sfcc_id_uq`   | no duplicate address rows on re-sync, `WHERE sfcc_address_id IS NOT NULL`                                 |
+
+**`customer_address_preferred_uq` is a unique _index_, and Postgres cannot defer one to commit
+time.** That is why every preferred swap clears the old flag before setting the new one, inside a
+single transaction — the ordering is a correctness requirement, not a style choice. `setPreferredFlag`
+throwing on an unknown id rolls the clear back with it, so a bad id cannot strand a customer with no
+preferred address at all.
 
 **Predicates must be written as literal SQL with bare snake_case column names** —
 `sql\`email IS NOT NULL\``, not `sql\`${t.email} IS NOT NULL\``. drizzle-kit serializes index *columns*
@@ -1210,6 +1333,16 @@ written verbatim, so a whitespace-only value from a source system is stored as w
 `PATCH` schema trims and rejects blanks at the edge, which covers everything a client sends but not
 what arrives through SFCC provisioning.
 
+**Addresses have no sparse patch at all.** `addressValues` emits all twelve columns, so an upsert is
+a full replacement and any field the input omits is nulled. That is why the address endpoints mirror
+from the SFCC response rather than the request — the response is complete, a patch is not.
+
+**`upsertAddress` matches on `id` first, then `sfccAddressId`.** The order is load-bearing. A rename
+arrives as `{ id, sfccAddressId: <the new name> }`, and matching by name would find nothing and
+insert a second row — or find the _sibling_ that already holds that name and overwrite it. The SFCC
+sync path supplies no `id`, so it still resolves by name and still collapses a re-sync onto the row
+it belongs to.
+
 ### Concurrency
 
 `updateProfile` takes an optional `expectedVersion` and carries it into the `WHERE`. Zero rows affected
@@ -1260,12 +1393,13 @@ pnpm test
 Two kinds, and only one of them needs a database.
 
 The **mapper and validation tests** — `mappers/*.test.ts` in both the customer module and the SFCC
-provider, plus `validations/customer.validation.test.ts` — are pure unit tests with no I/O. They
-carry most of the `PATCH` coverage, because most of that endpoint is field-by-field mapping: the
-phone switch in every direction, `null` reaching the store as a clear, the SCAPI `c_*` renames, and
-two assertions that exist to fail loudly rather than to describe behaviour — one pinning `CLEAR_VALUE`
-so a sandbox finding cannot change the wire format silently, one asserting `toUpdateProfileInput`
-never emits `email`, `birthDate`, `language`, `salutation` or `gender`.
+provider, plus the two `validations/*.test.ts` — are pure unit tests with no I/O. They carry most of
+the write coverage, because most of those endpoints are field-by-field mapping: the phone switch in
+every direction, `null` reaching the store as a clear, the SCAPI `c_*` renames, the address
+required-field fill and its 422, and the `preferred` fallback that stops an address demoting itself.
+Several assertions exist to fail loudly rather than to describe behaviour — one pins `CLEAR_VALUE` so
+a sandbox finding cannot change the wire format silently, one holds `toUpdateProfileInput` to the six
+fields it may touch, and one checks that no required address field is ever filled with `''`.
 
 Those tests assert **key presence**, not just value: `assert.equal('phoneMobile' in update, false)`.
 An absent key and a key set to `undefined` are the same to `deepEqual` and opposite everywhere
@@ -1320,14 +1454,23 @@ For a **write**, add a request type in step 1 and a write-direction mapper in st
 key like the read one, so an absent key stays absent. `updateCustomer` in `clients/customers.client.ts`
 is the worked example. Two more things:
 
-- **The one-shot `CONCURRENT_MODIFICATION` retry is in place** on `updateCustomer`, reinstating what
-  registration carried in the auth API. Reuse `isConcurrentModification`; do not turn it into a loop.
+- **The one-shot `CONCURRENT_MODIFICATION` retry is in place**, reinstating what registration carried
+  in the auth API. Wrap the send in `retryOnceOnConcurrentModification`; do not turn it into a loop.
+  If the call has its own permanent 409 — a name collision, say — give it a slug predicate and check
+  that _before_ the retry, the way `isRenameConflict` does.
 - **Profile and address writes need a scope change first.** The dev SLAS clients carry
   `sfcc.shopper-customers.login` / `.register`, which is enough for `getCustomer` but not for a
   my-account write — profile writes need `sfcc.shopper-myaccount.rw`, addresses
   `sfcc.shopper-myaccount.addresses.rw`. That is a SLAS Admin change, not a code change, and a missing
   scope looks exactly like an identity mismatch — both arrive as a 403. **This currently blocks any
-  end-to-end verification of `PATCH /v1/member/profile`.**
+  end-to-end verification of `PATCH /v1/member/profile` and all four address endpoints.**
+
+**A route with a path parameter.** `validate(schema, 'params')` already works — `ValidationSource`
+covers it and the middleware is source-generic. Declare it on the route rather than through `use`:
+`req.params` only carries the parameter inside the layer whose path matched it. Read it back with
+`getValidated<T>(req, 'params')` rather than off `req.params`, which the `VersionedParams` index
+signature types as `string | string[]`. `customerRouter` has the worked example on
+`/addresses/:id`.
 
 **A new module.** Create `src/modules/<name>/` with `controllers/`, `services/`, `validations/`,
 `types/` and `routes/`, give the router `Router({ mergeParams: true })` so it can see `:version`, add

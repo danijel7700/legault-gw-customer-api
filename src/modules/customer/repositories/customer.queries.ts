@@ -258,9 +258,17 @@ export async function throwUpdateFailure(
   throw new CustomerVersionConflictError(id, expectedVersion ?? existing.version, existing.version);
 }
 
-export async function bumpCustomerVersion(tx: Db, customerId: string): Promise<void> {
+export async function bumpCustomerVersion(
+  tx: Db,
+  customerId: string,
+  modifiedBy: SourceSystem,
+): Promise<void> {
   await tx
     .update(customer)
-    .set({ version: sql`${customer.version} + 1`, updatedAt: new Date() })
+    .set({
+      version: sql`${customer.version} + 1`,
+      lastModifiedBy: modifiedBy,
+      updatedAt: new Date(),
+    })
     .where(eq(customer.id, customerId));
 }

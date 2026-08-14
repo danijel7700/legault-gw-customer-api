@@ -38,7 +38,12 @@ export class ConflictError extends HttpError {
   }
 }
 
-/** A supplied precondition did not hold — a failed `If-Match` against an ETag. */
+export class UnprocessableEntityError extends HttpError {
+  constructor(message = 'Unprocessable entity', options: HttpErrorOptions = {}) {
+    super(422, message, { code: ErrorCode.UNPROCESSABLE_ENTITY, ...options });
+  }
+}
+
 export class PreconditionFailedError extends HttpError {
   constructor(message = 'Precondition failed', options: HttpErrorOptions = {}) {
     super(412, message, { code: ErrorCode.PRECONDITION_FAILED, ...options });

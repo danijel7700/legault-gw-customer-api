@@ -2,9 +2,12 @@ export { customerRouter } from './routes/customer.routes.js';
 export { CUSTOMER_ID_HEADER } from './validations/customer.validation.js';
 export { PHONE_TYPES } from './types/customer.types.js';
 export type {
+  CreateMemberAddressRequest,
+  CustomerAddress,
   CustomerIdentity,
   CustomerProfile,
   PhoneType,
+  UpdateMemberAddressRequest,
   UpdateMemberProfileRequest,
 } from './types/customer.types.js';
 

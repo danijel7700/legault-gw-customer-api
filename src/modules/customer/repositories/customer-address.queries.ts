@@ -113,10 +113,10 @@ async function findMatchingAddressId(
   input: UpsertAddressInput,
 ): Promise<string | undefined> {
   const match =
-    input.sfccAddressId != null
-      ? eq(customerAddress.sfccAddressId, input.sfccAddressId)
-      : input.id !== undefined
-        ? eq(customerAddress.id, input.id)
+    input.id !== undefined
+      ? eq(customerAddress.id, input.id)
+      : input.sfccAddressId != null
+        ? eq(customerAddress.sfccAddressId, input.sfccAddressId)
         : undefined;
 
   if (match === undefined) {
@@ -166,12 +166,12 @@ export async function setPreferredFlag(
   tx: Db,
   customerId: string,
   addressId: string,
-): Promise<boolean> {
-  const updated = await tx
+): Promise<CustomerAddress | undefined> {
+  const [row] = await tx
     .update(customerAddress)
     .set({ isPreferred: true, updatedAt: new Date() })
     .where(and(eq(customerAddress.customerId, customerId), eq(customerAddress.id, addressId)))
-    .returning({ id: customerAddress.id });
+    .returning();
 
-  return updated.length > 0;
+  return row === undefined ? undefined : toCustomerAddress(row);
 }

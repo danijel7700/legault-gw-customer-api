@@ -61,3 +61,32 @@ export interface UpdateCustomerRequest {
   readonly c_postalCode?: string | null;
   readonly c_preferredStore?: string | null;
 }
+
+export interface CreateAddressRequest {
+  readonly addressId: string;
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly address1: string;
+  readonly address2?: string | null;
+  readonly city: string;
+  readonly stateCode: string;
+  readonly postalCode: string;
+  readonly countryCode: string;
+  readonly phone: string;
+  readonly c_phoneType?: string;
+}
+
+export interface UpdateAddressRequest {
+  readonly addressId: string;
+  readonly countryCode: string;
+  readonly lastName: string;
+  readonly firstName?: string;
+  readonly address1?: string;
+  readonly address2?: string | null;
+  readonly city?: string;
+  readonly stateCode?: string;
+  readonly postalCode?: string;
+  readonly phone?: string;
+  readonly c_phoneType?: string | null;
+  readonly preferred?: boolean;
+}

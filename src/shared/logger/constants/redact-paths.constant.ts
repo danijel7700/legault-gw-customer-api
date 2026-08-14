@@ -37,6 +37,17 @@ export const REDACT_PATHS: readonly string[] = [
   '*.birthday',
   '*.postalCode',
 
+  'address1',
+  'address2',
+  'city',
+  'stateCode',
+  'fullName',
+  '*.address1',
+  '*.address2',
+  '*.city',
+  '*.stateCode',
+  '*.fullName',
+
   'addresses[*].address1',
   'addresses[*].address2',
   'addresses[*].postalCode',

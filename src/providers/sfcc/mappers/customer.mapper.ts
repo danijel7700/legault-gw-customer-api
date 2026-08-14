@@ -1,12 +1,16 @@
 import type {
+  SfccAddressCreate,
   SfccAddressRecord,
+  SfccAddressUpdate,
   SfccCustomerRecord,
   SfccCustomerUpdate,
 } from '../../../modules/customer/types/customer.types.js';
 import type { Mutable } from '../../../shared/types/utility.types.js';
 import type {
+  CreateAddressRequest,
   CustomerAddressResponse,
   GetCustomerResponse,
+  UpdateAddressRequest,
   UpdateCustomerRequest,
 } from '../types/customers.types.js';
 
@@ -65,9 +69,67 @@ export function toUpdateCustomerRequest(update: SfccCustomerUpdate): UpdateCusto
   return body;
 }
 
-function toSfccAddressRecord(address: CustomerAddressResponse): SfccAddressRecord {
+export function toCreateAddressRequest(address: SfccAddressCreate): CreateAddressRequest {
+  const body: Mutable<CreateAddressRequest> = {
+    addressId: address.addressId,
+    firstName: address.firstName,
+    lastName: address.lastName,
+    address1: address.street1,
+    address2: address.street2 ?? CLEAR_VALUE,
+    city: address.city,
+    stateCode: address.stateCode,
+    postalCode: address.postalCode,
+    countryCode: address.countryCode,
+    phone: address.phone,
+  };
+
+  if (address.phoneType !== undefined) {
+    body.c_phoneType = address.phoneType;
+  }
+
+  return body;
+}
+
+export function toUpdateAddressRequest(update: SfccAddressUpdate): UpdateAddressRequest {
+  const body: Mutable<UpdateAddressRequest> = {
+    addressId: update.addressId,
+    countryCode: update.countryCode,
+    lastName: update.lastName,
+  };
+
+  if (update.firstName !== undefined) {
+    body.firstName = update.firstName;
+  }
+  if (update.street1 !== undefined) {
+    body.address1 = update.street1;
+  }
+  if (update.street2 !== undefined) {
+    body.address2 = update.street2 ?? CLEAR_VALUE;
+  }
+  if (update.city !== undefined) {
+    body.city = update.city;
+  }
+  if (update.stateCode !== undefined) {
+    body.stateCode = update.stateCode;
+  }
+  if (update.postalCode !== undefined) {
+    body.postalCode = update.postalCode;
+  }
+  if (update.phone !== undefined) {
+    body.phone = update.phone;
+  }
+  if (update.phoneType !== undefined) {
+    body.c_phoneType = update.phoneType ?? CLEAR_VALUE;
+  }
+  if (update.preferred !== undefined) {
+    body.preferred = update.preferred;
+  }
+
+  return body;
+}
+
+export function toSfccAddressRecord(address: CustomerAddressResponse): SfccAddressRecord {
   return {
-    // Deliberately not coerced to '' — see SfccAddressRecord.
     addressId: address.addressId,
     firstName: address.firstName,
     lastName: address.lastName,

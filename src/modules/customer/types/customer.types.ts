@@ -1,11 +1,3 @@
-/**
- * The address shape SFCC reports, before anything is stored.
- *
- * `addressId` stays optional here rather than being coerced to `''`: an empty
- * string in `sfcc_address_id` would defeat `customer_address_sfcc_id_uq`, whose
- * predicate is `WHERE sfcc_address_id IS NOT NULL`, by colliding every
- * unidentified address on `('', customerId)`.
- */
 export interface SfccAddressRecord {
   readonly addressId?: string;
   readonly firstName?: string;
@@ -46,6 +38,7 @@ export interface SfccCustomerRecord {
 }
 
 export interface CustomerAddress {
+  readonly id?: string;
   readonly addressId: string;
   readonly address1?: string;
   readonly address2?: string;
@@ -97,4 +90,61 @@ export interface SfccCustomerUpdate {
   readonly phoneMobile?: string | null;
   readonly postalCode?: string | null;
   readonly preferredStore?: string | null;
+}
+
+export interface CreateMemberAddressRequest {
+  readonly label: string;
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly street1: string;
+  readonly street2?: string | null;
+  readonly city: string;
+  readonly stateCode: string;
+  readonly postalCode: string;
+  readonly countryCode?: string;
+  readonly phone: string;
+  readonly phoneType?: PhoneType;
+}
+
+export interface UpdateMemberAddressRequest {
+  readonly label?: string;
+  readonly firstName?: string;
+  readonly lastName?: string;
+  readonly street1?: string;
+  readonly street2?: string | null;
+  readonly city?: string;
+  readonly stateCode?: string;
+  readonly postalCode?: string;
+  readonly countryCode?: string;
+  readonly phone?: string;
+  readonly phoneType?: PhoneType | null;
+}
+
+export interface SfccAddressCreate {
+  readonly addressId: string;
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly street1: string;
+  readonly street2?: string | null;
+  readonly city: string;
+  readonly stateCode: string;
+  readonly postalCode: string;
+  readonly countryCode: string;
+  readonly phone: string;
+  readonly phoneType?: PhoneType;
+}
+
+export interface SfccAddressUpdate {
+  readonly addressId: string;
+  readonly countryCode: string;
+  readonly lastName: string;
+  readonly firstName?: string;
+  readonly street1?: string;
+  readonly street2?: string | null;
+  readonly city?: string;
+  readonly stateCode?: string;
+  readonly postalCode?: string;
+  readonly phone?: string;
+  readonly phoneType?: PhoneType | null;
+  readonly preferred?: boolean;
 }

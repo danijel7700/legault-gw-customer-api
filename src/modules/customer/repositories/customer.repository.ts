@@ -3,6 +3,7 @@ import type {
   Customer,
   CustomerAddress,
   ExternalSystem,
+  SourceSystem,
 } from '../../../database/schemas/customer/index.js';
 import { NotFoundError } from '../../../shared/errors/index.js';
 import { logger } from '../../../shared/logger/logger.js';
@@ -98,34 +99,50 @@ export function createCustomerRepository(db: Db): CustomerRepository {
       return listAddressRows(db, customerId);
     },
 
-    async upsertAddress(customerId: string, input: UpsertAddressInput): Promise<CustomerAddress> {
+    async upsertAddress(
+      customerId: string,
+      input: UpsertAddressInput,
+      modifiedBy: SourceSystem = 'CORE_API',
+    ): Promise<CustomerAddress> {
       return db.transaction(async (tx) => {
         const brand = await requireCustomerBrand(tx, customerId);
         const address = await upsertAddressRow(tx, customerId, brand, input);
 
-        await bumpCustomerVersion(tx, customerId);
+        await bumpCustomerVersion(tx, customerId, modifiedBy);
 
         return address;
       });
     },
 
-    async deleteAddress(customerId: string, addressId: string): Promise<void> {
+    async deleteAddress(
+      customerId: string,
+      addressId: string,
+      modifiedBy: SourceSystem = 'CORE_API',
+    ): Promise<void> {
       await db.transaction(async (tx) => {
         if (await deleteAddressRow(tx, customerId, addressId)) {
-          await bumpCustomerVersion(tx, customerId);
+          await bumpCustomerVersion(tx, customerId, modifiedBy);
         }
       });
     },
 
-    async setPreferredAddress(customerId: string, addressId: string): Promise<void> {
-      await db.transaction(async (tx) => {
+    async setPreferredAddress(
+      customerId: string,
+      addressId: string,
+      modifiedBy: SourceSystem = 'CORE_API',
+    ): Promise<CustomerAddress> {
+      return db.transaction(async (tx) => {
         await clearPreferredAddress(tx, customerId, addressId);
 
-        if (!(await setPreferredFlag(tx, customerId, addressId))) {
+        const address = await setPreferredFlag(tx, customerId, addressId);
+
+        if (address === undefined) {
           throw new NotFoundError('Address not found');
         }
 
-        await bumpCustomerVersion(tx, customerId);
+        await bumpCustomerVersion(tx, customerId, modifiedBy);
+
+        return address;
       });
     },
   };

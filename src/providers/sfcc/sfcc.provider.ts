@@ -1,13 +1,22 @@
 import type { BrandConfig } from '../../config/types/brand.types.js';
 import type {
   CustomerIdentity,
+  SfccAddressCreate,
+  SfccAddressRecord,
+  SfccAddressUpdate,
   SfccCustomerRecord,
   SfccCustomerUpdate,
 } from '../../modules/customer/types/customer.types.js';
 import type { Brand } from '../../shared/types/api.types.js';
 
 import { createCustomersClient, type CustomersClient } from './clients/customers.client.js';
-import { toSfccCustomerRecord, toUpdateCustomerRequest } from './mappers/customer.mapper.js';
+import {
+  toCreateAddressRequest,
+  toSfccAddressRecord,
+  toSfccCustomerRecord,
+  toUpdateAddressRequest,
+  toUpdateCustomerRequest,
+} from './mappers/customer.mapper.js';
 
 export interface SfccProvider {
   getCustomer(identity: CustomerIdentity): Promise<SfccCustomerRecord>;
@@ -16,6 +25,16 @@ export interface SfccProvider {
     identity: CustomerIdentity,
     update: SfccCustomerUpdate,
   ): Promise<SfccCustomerRecord>;
+
+  createAddress(identity: CustomerIdentity, address: SfccAddressCreate): Promise<SfccAddressRecord>;
+
+  updateAddress(
+    identity: CustomerIdentity,
+    addressName: string,
+    update: SfccAddressUpdate,
+  ): Promise<SfccAddressRecord>;
+
+  deleteAddress(identity: CustomerIdentity, addressName: string): Promise<void>;
 }
 
 const providers = new Map<Brand, SfccProvider>();
@@ -44,5 +63,24 @@ function createSfccProvider(brandConfig: BrandConfig): SfccProvider {
       toSfccCustomerRecord(
         await customers.updateCustomer(accessToken, customerId, toUpdateCustomerRequest(update)),
       ),
+
+    createAddress: async ({ customerId, accessToken }, address) =>
+      toSfccAddressRecord(
+        await customers.createAddress(accessToken, customerId, toCreateAddressRequest(address)),
+      ),
+
+    updateAddress: async ({ customerId, accessToken }, addressName, update) =>
+      toSfccAddressRecord(
+        await customers.updateAddress(
+          accessToken,
+          customerId,
+          addressName,
+          toUpdateAddressRequest(update),
+        ),
+      ),
+
+    deleteAddress: async ({ customerId, accessToken }, addressName): Promise<void> => {
+      await customers.deleteAddress(accessToken, customerId, addressName);
+    },
   };
 }

@@ -98,14 +98,15 @@ export function toCustomerProfile(record: SfccCustomerRecord): CustomerProfile {
     preferredLocale: record.preferredLocale,
     postalCode: record.postalCode,
     preferredStore: record.preferredStore,
-    addresses: record.addresses?.map(toResponseAddress),
+    addresses: record.addresses?.map((address) => toResponseAddress(address)),
   };
 }
 
-function toResponseAddress(address: SfccAddressRecord): CustomerAddress {
+export function toResponseAddress(address: SfccAddressRecord, id?: string): CustomerAddress {
   const fullName = [address.firstName, address.lastName].filter(Boolean).join(' ');
 
   return {
+    id,
     addressId: address.addressId ?? '',
     address1: address.address1,
     address2: address.address2,
